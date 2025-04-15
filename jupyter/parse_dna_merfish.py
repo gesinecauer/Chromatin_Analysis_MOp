@@ -316,6 +316,7 @@ def process_data(input_file, chosen_loci_file, trace_min_nloci=3, trace_min_nloc
                 re.sub(r'\.csv$', '', os.path.basename(output_file)))
             chrom_label = '_'.join(map(str, chrom_to_filter.tolist()))
             output_file = f"{output_file}.chrom_{chrom_label}.csv"
+        os.makedirs(os.path.dirname(output_file), exist_ok=True)
         print(f"\nSaving to {output_file}", flush=True)
         df.to_csv(output_file, index=False)
 
