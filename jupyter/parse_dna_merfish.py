@@ -289,6 +289,7 @@ def process_data(input_file, chosen_loci_file, trace_min_nloci=3, trace_min_nloc
             df = df[df.chrom.isin(chrom_to_filter)]
 
     # Assign homolog identities for each cell
+    # NOTE: considering distances between ALL loci for this process, not just 'chosen' loci
     if verbose:
         print(f"\nASSIGNING HOMOLOGS FOR: {', '.join(['chr' + str(x) for x in chrom_to_filter])}", flush=True)
         print("\tWhen comparing candidate cell's traces to homologs of previously labeled cells...", flush=True)
