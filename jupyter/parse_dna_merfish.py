@@ -56,10 +56,10 @@ def filter_data(df, trace_min_nloci=3, trace_min_nloci_ratio=0.1, max_nchrom_gt2
             raise NotImplementedError()
 
     # Remove loci where >[cutoff] cells are missing from one or more of the traces
-    ncells_per_trace = df[['trace_id', 'chrom', 'cell_id']].drop_duplicates().groupby(
+    ncells_per_molecule = df[['trace_id', 'chrom', 'cell_id']].drop_duplicates().groupby(
         ['trace_id', 'chrom']).size().unstack(level=0)
     cov_per_locus = df.groupby(['trace_id', 'chrom', 'chrom_order']).size().unstack(level=0)
-    cov_per_locus /= ncells_per_trace
+    cov_per_locus /= ncells_per_molecule
     cov_per_locus['trace_avg'] = cov_per_locus[[1, 2]].mean(axis=1)
     cov_per_locus['trace_min'] = cov_per_locus[[1, 2]].min(axis=1)
     cov_per_locus['pass_cutoff'] = cov_per_locus.trace_min >= max_missingness_per_locus
@@ -70,9 +70,9 @@ def filter_data(df, trace_min_nloci=3, trace_min_nloci_ratio=0.1, max_nchrom_gt2
         print((f"\tRemoved {(~cov_per_locus.pass_cutoff).sum()}/{len(cov_per_locus)} LOCI for"
                f" which >={max_missingness_per_locus * 100:g}% of cells had missing data"), flush=True)
         print(f"\t↳ Current n={len(df):,}, {len(df) / nrows_orig * 100:.3g}% of original", flush=True)
-        # cov_desc = pd.concat([
-        #     cov_per_locus[[c]].describe() for c in cov_per_locus.columns if c != "pass_cutoff"], axis=1)
-        # print(cov_desc, flush=True)
+        cov_desc = pd.concat([
+            cov_per_locus[[c]].describe() for c in cov_per_locus.columns if c != "pass_cutoff"], axis=1)
+        print(cov_desc, flush=True)
 
     # Remove very small traces
     # (NOTE: trace size is determined by number of chosen loci, NOT number of total loci)
@@ -232,7 +232,7 @@ def process_data(input_file, chosen_loci_file, trace_min_nloci=3, trace_min_nloc
                  chrom_to_filter=None, compare_to_labeled_loci_with_2_traces=False, output_file=None,
                  verbose=True):
     df = pd.read_csv(input_file, dtype={
-        'cell_id': int, 'rep_id': float, 'chrom': str, 'trace_id': int, 'chrom_order': int,
+        'cell_id': str, 'rep_id': float, 'chrom': str, 'trace_id': int, 'chrom_order': int,
         'chrom_start': int, 'chrom_end': int, 'x': float, 'y': float, 'z': float})
     df.columns = [x.strip('#') for x in df.columns]
     if 'hmlg' in df.columns:  # TODO temp fix
