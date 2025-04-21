@@ -24,20 +24,44 @@ def remove_cells_with_extra_traces(df, max_nchrom=1):
         return df
 
 
-def filter_data(df, trace_min_nloci=3, trace_min_nloci_ratio=0.1, max_nchrom_gt2trace=0,
-                max_missingness_per_locus=0.1, verbose=True):
+def filter_data_per_hmlg(df, min_nonmissing_per_phased_locus=0.1, verbose=True):
+    if not min_nonmissing_per_phased_locus:
+        return df
+    # Remove loci where >[cutoff] cells are missing from one or more of the traces
+    ncopies_per_chrom = df[['hmlg', 'chrom', 'cell_id']].drop_duplicates().groupby(
+        ['hmlg', 'chrom']).size().unstack(level=0)
+    cov_per_locus = df.groupby(['hmlg', 'chrom', 'chrom_order', 'chosen_loci']).size().unstack(
+        level=0).reset_index(level=2)
+    cov_per_locus[[1, 2]] /= ncopies_per_chrom
+    cov_per_locus['hmlg_min'] = cov_per_locus[[1, 2]].min(axis=1)
+    cov_per_locus['pass_cutoff'] = cov_per_locus.hmlg_min >= min_nonmissing_per_locus
+    pass_cutoff = cov_per_locus[cov_per_locus.pass_cutoff].index
+    df.set_index(['chrom', 'chrom_order'], inplace=True)
+    df = df[df.index.isin(pass_cutoff)].reset_index()
+    if verbose:
+        print((f"\tRemoved {(~cov_per_locus.pass_cutoff).sum()}/{len(cov_per_locus)} LOCI (="
+               f"{((~cov_per_locus.pass_cutoff) & cov_per_locus.chosen_loci).sum()}/{cov_per_locus.chosen_loci.sum()}"
+               f" chosen loci) where one or both homologs were detected in <{min_nonmissing_per_locus * 100:g}% of cells"), flush=True)
+        print(f"\t ↳ Current n={len(df):,}, {len(df) / nrows_orig * 100:.3g}% of original", flush=True)
+        print('\t   ' + cov_per_locus.loc[cov_per_locus.pass_cutoff, 'ratio_ncopies'].describe().to_string().replace(
+            '\n', '\n\t   '), flush=True)
+    return df
+
+
+def filter_data(df, max_nchrom_gt2trace=0, min_nonmissing_per_locus=0.1, trace_min_nloci=3,
+                trace_min_nloci_ratio=0.1, verbose=True):
     nrows_orig = len(df)
     if verbose:
         print(f"FILTERING... original n={len(df):,}", flush=True)
 
-    if trace_min_nloci is None:
-        trace_min_nloci = 0
-    if trace_min_nloci_ratio is None:
-        trace_min_nloci_ratio = 0
     if max_nchrom_gt2trace is None:
-        max_nchrom_gt2trace = 0
-    if max_missingness_per_locus is None:
-        max_missingness_per_locus = 0
+        max_nchrom_gt2trace = 0  # Strictest, no chrom have extra (>2) traces
+    if min_nonmissing_per_locus is None:
+        min_nonmissing_per_locus = 0  # Skip filtering on this
+    if trace_min_nloci is None:
+        trace_min_nloci = 0  # Skip filtering on this
+    if trace_min_nloci_ratio is None:
+        trace_min_nloci_ratio = 0  # Skip filtering on this
 
     # Remove cells where >[cutoff] chromosomes have >2 traces
     # If [cutoff] > 0, also remove any extra traces
@@ -51,28 +75,28 @@ def filter_data(df, trace_min_nloci=3, trace_min_nloci_ratio=0.1, max_nchrom_gt2
             if verbose:
                 print(f"\tRemoved {ncells_removed}/{ncells_orig} CELLS where >{max_nchrom_gt2trace}"
                      f" chromosomes have extra (>2) traces", flush=True)
-                print(f"\t↳ Current n={len(df):,}, {len(df) / nrows_orig * 100:.3g}% of original", flush=True)
+                print(f"\t ↳ Current n={len(df):,}, {len(df) / nrows_orig * 100:.3g}% of original", flush=True)
         if max_nchrom_gt2trace > 0: # Remove any extra traces from cell with >2 traces
             raise NotImplementedError()
 
-    # Remove loci where >[cutoff] cells are missing from one or more of the traces
-    ncells_per_molecule = df[['trace_id', 'chrom', 'cell_id']].drop_duplicates().groupby(
-        ['trace_id', 'chrom']).size().unstack(level=0)
-    cov_per_locus = df.groupby(['trace_id', 'chrom', 'chrom_order']).size().unstack(level=0)
-    cov_per_locus /= ncells_per_molecule
-    cov_per_locus['trace_avg'] = cov_per_locus[[1, 2]].mean(axis=1)
-    cov_per_locus['trace_min'] = cov_per_locus[[1, 2]].min(axis=1)
-    cov_per_locus['pass_cutoff'] = cov_per_locus.trace_min >= max_missingness_per_locus
-    pass_cutoff = cov_per_locus[cov_per_locus.pass_cutoff].index
-    df.set_index(['chrom', 'chrom_order'], inplace=True)
-    df = df[df.index.isin(pass_cutoff)].reset_index()
-    if verbose:
-        print((f"\tRemoved {(~cov_per_locus.pass_cutoff).sum()}/{len(cov_per_locus)} LOCI for"
-               f" which >={max_missingness_per_locus * 100:g}% of cells had missing data"), flush=True)
-        print(f"\t↳ Current n={len(df):,}, {len(df) / nrows_orig * 100:.3g}% of original", flush=True)
-        cov_desc = pd.concat([
-            cov_per_locus[[c]].describe() for c in cov_per_locus.columns if c != "pass_cutoff"], axis=1)
-        print(cov_desc, flush=True)
+    # Remove loci where >[cutoff] cells are missing (pool data from both traces together for this)
+    if min_nonmissing_per_locus:
+        ncopies_per_chrom = df[['chrom', 'cell_id', 'trace_id']].drop_duplicates().groupby('chrom').size()
+        cov_per_locus = df.groupby(['chrom', 'chrom_order', 'chosen_loci']).size().reset_index(
+            level=[1, 2]).rename({0: 'ratio_ncopies'}, axis=1)
+        cov_per_locus['ratio_ncopies'] /= ncopies_per_chrom
+        cov_per_locus['pass_cutoff'] = cov_per_locus.ratio_ncopies >= min_nonmissing_per_locus
+        cov_per_locus = cov_per_locus.reset_index().set_index(['chrom', 'chrom_order'])
+        pass_cutoff = cov_per_locus[cov_per_locus.pass_cutoff].index
+        df.set_index(['chrom', 'chrom_order'], inplace=True)
+        df = df[df.index.isin(pass_cutoff)].reset_index()
+        if verbose:
+            print((f"\tRemoved {(~cov_per_locus.pass_cutoff).sum()}/{len(cov_per_locus)} LOCI (="
+                   f"{((~cov_per_locus.pass_cutoff) & cov_per_locus.chosen_loci).sum()}/{cov_per_locus.chosen_loci.sum()}"
+                   f" chosen loci) which were detected in <{min_nonmissing_per_locus * 100:g}% of cells"), flush=True)
+            print(f"\t ↳ Current n={len(df):,}, {len(df) / nrows_orig * 100:.3g}% of original", flush=True)
+            print('\t   ' + cov_per_locus.loc[cov_per_locus.pass_cutoff, 'ratio_ncopies'].describe().to_string().replace(
+                '\n', '\n\t   '), flush=True)
 
     # Remove very small traces
     # (NOTE: trace size is determined by number of chosen loci, NOT number of total loci)
@@ -87,7 +111,7 @@ def filter_data(df, trace_min_nloci=3, trace_min_nloci_ratio=0.1, max_nchrom_gt2
         if verbose:
             print((f"\tRemoved {ntrace_removed}/{ntrace_orig} TRACES whose length <= {trace_min_nloci} loci or <= "
                    f"{trace_min_nloci_ratio * 100:.3g}% mappable chrom"), flush=True)
-            print(f"\t↳ Current n={len(df):,}, {len(df) / nrows_orig * 100:.3g}% of original", flush=True)
+            print(f"\t ↳ Current n={len(df):,}, {len(df) / nrows_orig * 100:.3g}% of original", flush=True)
 
     # Remove chromosomes with where no cells have >1 trace
     # (NOTE: only considering chosen loci, not all loci)
@@ -101,7 +125,7 @@ def filter_data(df, trace_min_nloci=3, trace_min_nloci_ratio=0.1, max_nchrom_gt2
     nchrom_removed = nchrom_orig - len(df.chrom.drop_duplicates())
     if verbose:
         print(f"\tRemoved {nchrom_removed}/{nchrom_orig} CHROMOSOMES where no cells have >1 trace", flush=True)
-        print(f"\t↳ Current n={len(df):,}, {len(df) / nrows_orig * 100:.3g}% of original", flush=True)
+        print(f"\t ↳ Current n={len(df):,}, {len(df) / nrows_orig * 100:.3g}% of original", flush=True)
 
     return df
 
@@ -228,9 +252,9 @@ def label_homologs_for_chrom(df, df_cell_desc, chrom, compare_to_labeled_loci_wi
     return df
 
 
-def process_data(input_file, chosen_loci_file, trace_min_nloci=3, trace_min_nloci_ratio=0.1, max_nchrom_gt2trace=0,
-                 chrom_to_filter=None, compare_to_labeled_loci_with_2_traces=False, output_file=None,
-                 verbose=True):
+def process_data(input_file, chosen_loci_file, max_nchrom_gt2trace=0, min_nonmissing_per_locus=0.1, trace_min_nloci=3,
+                 trace_min_nloci_ratio=0.1, chrom_to_filter=None, compare_to_labeled_loci_with_2_traces=False,
+                 output_file=None, verbose=True):
     df = pd.read_csv(input_file, dtype={
         'cell_id': str, 'rep_id': float, 'chrom': str, 'trace_id': int, 'chrom_order': int,
         'chrom_start': int, 'chrom_end': int, 'x': float, 'y': float, 'z': float})
@@ -246,8 +270,8 @@ def process_data(input_file, chosen_loci_file, trace_min_nloci=3, trace_min_nloc
 
     # ==== Filter data
     df = filter_data(
-        df, trace_min_nloci=trace_min_nloci, trace_min_nloci_ratio=trace_min_nloci_ratio,
-        max_nchrom_gt2trace=max_nchrom_gt2trace, verbose=verbose)
+        df, max_nchrom_gt2trace=max_nchrom_gt2trace, min_nonmissing_per_locus=min_nonmissing_per_locus,
+        trace_min_nloci=trace_min_nloci, trace_min_nloci_ratio=trace_min_nloci_ratio, verbose=verbose)
 
     # ==== Count number of traces (per locus, per cell)
     df.set_index(['cell_id', 'chrom', 'chrom_order'], inplace=True)
@@ -330,9 +354,10 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("data", type=str)
     parser.add_argument("--chosen_loci", required=True, type=str)
+    parser.add_argument("--max_nchrom_gt2trace", default=0, type=int)
+    parser.add_argument("--min_nonmissing_per_locus", default=0.1, type=float)
     parser.add_argument("--trace_min_nloci", default=3, type=int)
     parser.add_argument("--trace_min_nloci_ratio", default=0.1, type=float)
-    parser.add_argument("--max_nchrom_gt2trace", default=0, type=int)
     parser.add_argument('--compare_to_labeled_loci_with_2_traces', default=False,
                         action='store_true')
     parser.add_argument("--chrom", type=str, nargs='+')
@@ -341,8 +366,9 @@ def main():
 
     output_file = re.sub(r'\.csv$', '', args.data) + '.filtered.csv'
     process_data(
-        input_file=args.data, chosen_loci_file=args.chosen_loci, trace_min_nloci=args.trace_min_nloci,
-        trace_min_nloci_ratio=args.trace_min_nloci_ratio, max_nchrom_gt2trace=args.max_nchrom_gt2trace,
+        input_file=args.data, chosen_loci_file=args.chosen_loci, max_nchrom_gt2trace=args.max_nchrom_gt2trace,
+        min_nonmissing_per_locus=args.min_nonmissing_per_locus, trace_min_nloci=args.trace_min_nloci,
+        trace_min_nloci_ratio=args.trace_min_nloci_ratio,
         compare_to_labeled_loci_with_2_traces=args.compare_to_labeled_loci_with_2_traces,
         chrom_to_filter=args.chrom, output_file=output_file, verbose=args.verbose)
 
