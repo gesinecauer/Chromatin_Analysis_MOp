@@ -24,15 +24,16 @@ def remove_cells_with_extra_traces(df, max_nchrom=1):
         return df
 
 
-def filter_data_per_hmlg(df, min_nonmissing_per_phased_locus=0.1, verbose=True):
+def filter_data_per_hmlg(df, min_nonmissing_per_phased_locus=0.05, verbose=True):
     if not min_nonmissing_per_phased_locus:
         return df
-    # Remove loci where >[cutoff] cells are missing from one or more of the traces
-    ncopies_per_chrom = df[['hmlg', 'chrom', 'cell_id']].drop_duplicates().groupby(
-        ['hmlg', 'chrom']).size().unstack(level=0)
+    # Remove loci where <[cutoff]% of cells are non-missing from one or more of the traces
+    ncells = len(df[['cell_id']].drop_duplicates())
+    # ncopies_per_chrom = df[['hmlg', 'chrom', 'cell_id']].drop_duplicates().groupby(
+    #     ['hmlg', 'chrom']).size().unstack(level=0)
     cov_per_locus = df.groupby(['hmlg', 'chrom', 'chrom_order', 'chosen_loci']).size().unstack(
         level=0).reset_index(level=2)
-    cov_per_locus[[1, 2]] /= ncopies_per_chrom
+    cov_per_locus[[1, 2]] /= ncells
     cov_per_locus['hmlg_min'] = cov_per_locus[[1, 2]].min(axis=1)
     cov_per_locus['pass_cutoff'] = cov_per_locus.hmlg_min >= min_nonmissing_per_locus
     pass_cutoff = cov_per_locus[cov_per_locus.pass_cutoff].index
@@ -79,7 +80,7 @@ def filter_data(df, max_nchrom_gt2trace=0, min_nonmissing_per_locus=0.1, trace_m
         if max_nchrom_gt2trace > 0: # Remove any extra traces from cell with >2 traces
             raise NotImplementedError()
 
-    # Remove loci where >[cutoff] cells are missing (pool data from both traces together for this)
+    # Remove loci where <[cutoff]% data are non-missing (pool data from both traces together for this)
     if min_nonmissing_per_locus:
         ncopies_per_chrom = df[['chrom', 'cell_id', 'trace_id']].drop_duplicates().groupby('chrom').size()
         cov_per_locus = df.groupby(['chrom', 'chrom_order', 'chosen_loci']).size().reset_index(
@@ -252,9 +253,8 @@ def label_homologs_for_chrom(df, df_cell_desc, chrom, compare_to_labeled_loci_wi
     return df
 
 
-def process_data(input_file, chosen_loci_file, max_nchrom_gt2trace=0, min_nonmissing_per_locus=0.1, trace_min_nloci=3,
-                 trace_min_nloci_ratio=0.1, chrom_to_filter=None, compare_to_labeled_loci_with_2_traces=False,
-                 output_file=None, verbose=True):
+def preprocess_data(input_file, chosen_loci_file, max_nchrom_gt2trace=0, min_nonmissing_per_locus=0.1, trace_min_nloci=3,
+                    trace_min_nloci_ratio=0.1, verbose=True):
     df = pd.read_csv(input_file, dtype={
         'cell_id': str, 'rep_id': float, 'chrom': str, 'trace_id': int, 'chrom_order': int,
         'chrom_start': int, 'chrom_end': int, 'x': float, 'y': float, 'z': float})
@@ -279,6 +279,17 @@ def process_data(input_file, chosen_loci_file, max_nchrom_gt2trace=0, min_nonmis
     df['ntraces'] = 1
     df.loc[has_2traces_idx, 'ntraces'] = 2
     df.reset_index(inplace=True)
+
+    return df
+
+
+def process_data(input_file, chosen_loci_file, max_nchrom_gt2trace=0, min_nonmissing_per_locus=0.1, trace_min_nloci=3,
+                 trace_min_nloci_ratio=0.1, chrom_to_filter=None, compare_to_labeled_loci_with_2_traces=False,
+                 output_file=None, verbose=True):
+    df = preprocess_data(
+        input_file, chosen_loci_file=chosen_loci_file, max_nchrom_gt2trace=max_nchrom_gt2trace,
+        min_nonmissing_per_locus=min_nonmissing_per_locus, trace_min_nloci=trace_min_nloci,
+        trace_min_nloci_ratio=trace_min_nloci_ratio, verbose=verbose)
 
     # ==== Per chromosome: get ordering of cells in which homologs will be labled
     # For each trace: nloci per trace + nloci that are on both traces in the given cell
