@@ -24,29 +24,42 @@ def remove_cells_with_extra_traces(df, max_nchrom=1):
         return df
 
 
-def filter_data_per_hmlg(df, min_nonmissing_per_phased_locus=0.05, verbose=True):
-    if not min_nonmissing_per_phased_locus:
-        return df
+def filter_data_per_hmlg(df, min_nonmissing_per_phased_locus=None, verbose=True):
+    nrows_orig = len(df)
     # Remove loci where <[cutoff]% of cells are non-missing from one or more of the traces
     ncells = len(df[['cell_id']].drop_duplicates())
     # ncopies_per_chrom = df[['hmlg', 'chrom', 'cell_id']].drop_duplicates().groupby(
     #     ['hmlg', 'chrom']).size().unstack(level=0)
-    cov_per_locus = df.groupby(['hmlg', 'chrom', 'chrom_order', 'chosen_loci']).size().unstack(
-        level=0).reset_index(level=2)
+    grouping_cols = ['hmlg', 'chrom', 'chrom_order']
+    if 'chosen_loci' in df.columns:
+        grouping_cols.append('chosen_loci')
+    cov_per_locus = df.groupby(grouping_cols).size().unstack(level=0)
+    if 'chosen_loci' in df.columns:
+        grouping_cols.reset_index(level=2, inplace=True)
     cov_per_locus[[1, 2]] /= ncells
-    cov_per_locus['hmlg_min'] = cov_per_locus[[1, 2]].min(axis=1)
-    cov_per_locus['pass_cutoff'] = cov_per_locus.hmlg_min >= min_nonmissing_per_locus
-    pass_cutoff = cov_per_locus[cov_per_locus.pass_cutoff].index
-    df.set_index(['chrom', 'chrom_order'], inplace=True)
-    df = df[df.index.isin(pass_cutoff)].reset_index()
-    if verbose:
-        print((f"\tRemoved {(~cov_per_locus.pass_cutoff).sum()}/{len(cov_per_locus)} LOCI (="
-               f"{((~cov_per_locus.pass_cutoff) & cov_per_locus.chosen_loci).sum()}/{cov_per_locus.chosen_loci.sum()}"
-               f" chosen loci) where one or both homologs were detected in <{min_nonmissing_per_locus * 100:g}% of cells"), flush=True)
-        print(f"\t ↳ Current n={len(df):,}, {len(df) / nrows_orig * 100:.3g}% of original", flush=True)
-        print('\t   ' + cov_per_locus.loc[cov_per_locus.pass_cutoff, 'ratio_ncopies'].describe().to_string().replace(
-            '\n', '\n\t   '), flush=True)
-    return df
+    cov_per_locus['cell_cov_avg'] = cov_per_locus[[1, 2]].mean(axis=1)
+    cov_per_locus['cell_cov_min'] = cov_per_locus[[1, 2]].min(axis=1)
+    cov_per_locus.rename({1: "cell_cov_h1", 2: "cell_cov_h2"}, axis=1, inplace=True)
+    if min_nonmissing_per_phased_locus is not None:
+        cov_per_locus['pass_cutoff'] = cov_per_locus.cell_cov_min >= min_nonmissing_per_phased_locus
+        pass_cutoff = cov_per_locus[cov_per_locus.pass_cutoff].index
+        df.set_index(['chrom', 'chrom_order'], inplace=True)
+        df = df[df.index.isin(pass_cutoff)].reset_index()
+        if verbose:
+            if 'chosen_loci' in df.columns:
+                tmp = f" (={((~cov_per_locus.pass_cutoff) & cov_per_locus.chosen_loci).sum()}/{cov_per_locus.chosen_loci.sum()} chosen loci)"
+            else:
+                tmp = ""
+            print((f"\tRemoved {(~cov_per_locus.pass_cutoff).sum()}/{len(cov_per_locus)} LOCI{tmp}"
+                   f" where one or both homologs were detected in <{min_nonmissing_per_phased_locus * 100:g}% of cells"), flush=True)
+            print(f"\t ↳ Current n={len(df):,}, {len(df) / nrows_orig * 100:.3g}% of original", flush=True)
+            print('\t   ' + cov_per_locus[cov_per_locus.pass_cutoff].describe().drop('count').to_string().replace(
+                '\n', '\n\t   '), flush=True)
+    else:
+        print("\tRatio of cells in which each locus was detected:", flush=True)
+        print('\t   ' + cov_per_locus.describe().drop('count').to_string().replace('\n', '\n\t   '), flush=True)
+    
+    return df, cov_per_locus
 
 
 def filter_data(df, max_nchrom_gt2trace=0, min_nonmissing_per_locus=0.1, trace_min_nloci=3,
