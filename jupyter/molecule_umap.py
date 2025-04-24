@@ -53,17 +53,8 @@ def filter_molecules(df, restrict_single_hmlg_to=None, max_molecules_per_grp=Non
     return df
 
 
-def get_chrom_idx(df):
+def get_molecule_idx(df):
     df['idx'] = np.arange(len(df), dtype=int)
-    return df
-
-
-def get_ntraces_per_cell(df):
-    df.set_index(['cell_id', 'chrom'], inplace=True)
-    has_2traces_idx = df[df.trace_id == 1].index.intersection(df[df.trace_id == 2].index)
-    df['ntraces_per_cell'] = 1
-    df.loc[has_2traces_idx, 'ntraces_per_cell'] = 2
-    df.reset_index(inplace=True)
     return df
 
 
@@ -84,29 +75,17 @@ def molecule_umap(input_file, chosen_loci_file, trace_min_nloci=20, trace_min_nl
     print(output_dir, flush=True)
     os.makedirs(output_dir, exist_ok=True)
     molecules_file = os.path.join(output_dir, "molecules.csv")
-    mse_file = os.path.join(output_dir, "mse.npz")
     rng = np.random.default_rng(seed)
     df_loader = partial(
         preprocess_data, input_file=input_file, chosen_loci_file=chosen_loci_file,
         trace_min_nloci=trace_min_nloci, trace_min_nloci_ratio=trace_min_nloci_ratio, max_nchrom_gt2trace=0,
         min_nonmissing_per_locus=min_nonmissing_per_locus)
 
-    # if not (os.path.exists(molecules_file) and os.path.exists(mse_file)):
-    #     df = preprocess_data(
-    #         input_file=input_file, chosen_loci_file=chosen_loci_file, trace_min_nloci=trace_min_nloci,
-    #         trace_min_nloci_ratio=trace_min_nloci_ratio, max_nchrom_gt2trace=0,
-    #         min_nonmissing_per_locus=min_nonmissing_per_locus, verbose=verbose)
-    #     df.set_index(['cell_id', 'chrom'], inplace=True)
-    #     has_2traces_idx = df[df.trace_id == 1].index.intersection(df[df.trace_id == 2].index)
-    #     df['ntraces_per_cell'] = 1
-    #     df.loc[has_2traces_idx, 'ntraces_per_cell'] = 2
-    #     df.reset_index(inplace=True)
-
     if os.path.exists(molecules_file):
         df = None
         molecules = pd.read_csv(molecules_file)
     else:
-        df = get_ntraces_per_cell(df_loader(verbose=verbose))
+        df = df_loader(verbose=verbose)
         print(flush=True)
         molecules = df.groupby(['cell_id', 'chrom', 'trace_id', 'ntraces_per_cell']).size().reset_index(level=[0, 1, 2, 3]).rename(
             {0: 'nloci'}, axis=1)
@@ -124,7 +103,7 @@ def molecule_umap(input_file, chosen_loci_file, trace_min_nloci=20, trace_min_nl
                 rng=rng).reset_index(level=0)
         # Get index per molecule
         molecules = molecules.sort_values(['chrom', 'ntraces_per_cell', 'nloci'], ascending=False).reset_index(drop=True)
-        molecules = molecules.groupby('chrom').apply(get_chrom_idx, include_groups=False).reset_index(level=0).sort_index()
+        molecules = molecules.groupby('chrom').apply(get_molecule_idx, include_groups=False).reset_index(level=0).sort_index()
         # Save
         molecules.to_csv(molecules_file, index=False)
     print(molecules.groupby(['chrom', 'ntraces_per_cell']).size().unstack(level=1).fillna(0).astype(int).to_string(), flush=True)
@@ -140,7 +119,7 @@ def molecule_umap(input_file, chosen_loci_file, trace_min_nloci=20, trace_min_nl
             mse_matrix = sparse.load_npz(mse_file)
         else:
             if df is None:
-                df = get_ntraces_per_cell(df_loader(verbose=False))
+                df = df_loader(verbose=False)
             print(f"\nCHROMOSOME {chrom}", flush=True)
             molecules_chrom = molecules[molecules.chrom == chrom].set_index('idx')
 

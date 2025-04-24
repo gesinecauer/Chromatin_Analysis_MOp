@@ -8,11 +8,27 @@ from scipy.spatial.distance import pdist
 from tqdm import tqdm
 
 
-def remove_small_traces(df, nloci_per_chrom, min_nloci=3, min_nloci_ratio=0.1):
+def get_index_of_loci(df, spacing=2.5, start_col='chrom_start', end_col='chrom_end'):
+    df['idx_chrom'] = np.floor(df[[start_col, end_col]].mean(axis=1).values / 1e6 / spacing).astype(int)
+    df['idx_chrom'] = df[['chrom', 'idx_chrom']].groupby('chrom').apply(
+        lambda x: x - x.min(), include_groups=False).reset_index(level=0, drop=True)
+    
+    chromsizes_bins = (df.groupby('chrom').idx_chrom.max() + 1).sort_values(ascending=False)
+    cumsum_bins = pd.Series(index=chromsizes_bins.index, data=np.append(0, chromsizes_bins.values[:-1]).cumsum())
+    df['idx_genome'] = cumsum_bins.loc[df.chrom].values + df.idx_chrom
+
+    return df
+
+
+def remove_small_traces(df, nloci_per_chrom, min_nloci=3, min_nloci_ratio=0.1, by_chosen_loci_only=True):
     df['cutoff'] = np.maximum(min_nloci, min_nloci_ratio * nloci_per_chrom.loc[df.chrom.values].values)
     # df = df.groupby('chrom').apply(lambda x: (x if len(x) >= x.cutoff.values[0] else None), include_groups=False).reset_index(level=0)
-    df = df.groupby('chrom').apply(lambda x: (
-        x if x.chosen_loci.sum() >= x.cutoff.values[0] else None), include_groups=False).reset_index(level=0)
+    if by_chosen_loci_only:
+        df = df.groupby('chrom').apply(lambda x: (
+            x if x.chosen_loci.sum() >= x.cutoff.values[0] else None), include_groups=False).reset_index(level=0)
+    else:
+        df = df.groupby('chrom').apply(lambda x: (
+            x if len(x) >= x.cutoff.values[0] else None), include_groups=False).reset_index(level=0)
     if len(df):
         return df.drop('cutoff', axis=1)
 
@@ -26,7 +42,7 @@ def remove_cells_with_extra_traces(df, max_nchrom=1):
 
 def filter_data_per_hmlg(df, min_nonmissing_per_phased_locus=None, verbose=True):
     nrows_orig = len(df)
-    # Remove loci where <[cutoff]% of cells are non-missing from one or more of the traces
+    # Remove loci where <[cutoff]% of cells are non-missing from one or both of the traces
     ncells = len(df[['cell_id']].drop_duplicates())
     # ncopies_per_chrom = df[['hmlg', 'chrom', 'cell_id']].drop_duplicates().groupby(
     #     ['hmlg', 'chrom']).size().unstack(level=0)
@@ -63,7 +79,7 @@ def filter_data_per_hmlg(df, min_nonmissing_per_phased_locus=None, verbose=True)
 
 
 def filter_data(df, max_nchrom_gt2trace=0, min_nonmissing_per_locus=0.1, trace_min_nloci=3,
-                trace_min_nloci_ratio=0.1, verbose=True):
+                trace_min_nloci_ratio=0.1, trace_min_nloci_by_chosen_loci_only=True, verbose=True):
     nrows_orig = len(df)
     if verbose:
         print(f"FILTERING... original n={len(df):,}", flush=True)
@@ -112,15 +128,19 @@ def filter_data(df, max_nchrom_gt2trace=0, min_nonmissing_per_locus=0.1, trace_m
             print('\t   ' + cov_per_locus.loc[cov_per_locus.pass_cutoff, 'ratio_ncopies'].describe().to_string().replace(
                 '\n', '\n\t   '), flush=True)
 
-    # Remove very small traces
-    # (NOTE: trace size is determined by number of chosen loci, NOT number of total loci)
+    # Remove traces where very few loci were detected
+    # (if trace_min_nloci_by_chosen_loci_only=True: only considering number of chosen loci, NOT number of total loci)
     if trace_min_nloci or trace_min_nloci_ratio:
-        # nloci_per_chrom = df[['chrom', 'chrom_order']].drop_duplicates().groupby('chrom').size()
-        nloci_per_chrom = df[['chrom', 'chrom_order', 'chosen_loci']].drop_duplicates().groupby('chrom').chosen_loci.sum()
+        if trace_min_nloci_by_chosen_loci_only:
+            nloci_per_chrom = df[['chrom', 'chrom_order', 'chosen_loci']].drop_duplicates().groupby(
+                'chrom').chosen_loci.sum()
+        else:
+            nloci_per_chrom = df[['chrom', 'chrom_order']].drop_duplicates().groupby('chrom').size()
         ntrace_orig = len(df[['cell_id', 'chrom', 'trace_id']].drop_duplicates())
         df = df.groupby(['cell_id', 'trace_id']).apply(
             remove_small_traces, include_groups=False, nloci_per_chrom=nloci_per_chrom,
-            min_nloci=trace_min_nloci, min_nloci_ratio=trace_min_nloci_ratio).reset_index(level=[0, 1])
+            min_nloci=trace_min_nloci, min_nloci_ratio=trace_min_nloci_ratio,
+            by_chosen_loci_only=trace_min_nloci_by_chosen_loci_only).reset_index(level=[0, 1])
         ntrace_removed = ntrace_orig - len(df[['cell_id', 'chrom', 'trace_id']].drop_duplicates())
         if verbose:
             print((f"\tRemoved {ntrace_removed}/{ntrace_orig} TRACES whose length <= {trace_min_nloci} loci or <= "
@@ -266,6 +286,15 @@ def label_homologs_for_chrom(df, df_cell_desc, chrom, compare_to_labeled_loci_wi
     return df
 
 
+def get_ntraces_per_cell(df):
+    df.set_index(['cell_id', 'chrom'], inplace=True)
+    has_2traces_idx = df[df.trace_id == 1].index.intersection(df[df.trace_id == 2].index)
+    df['ntraces_per_cell'] = 1
+    df.loc[has_2traces_idx, 'ntraces_per_cell'] = 2
+    df.reset_index(inplace=True)
+    return df
+
+
 def preprocess_data(input_file, chosen_loci_file, max_nchrom_gt2trace=0, min_nonmissing_per_locus=0.1, trace_min_nloci=3,
                     trace_min_nloci_ratio=0.1, verbose=True):
     df = pd.read_csv(input_file, dtype={
@@ -292,6 +321,9 @@ def preprocess_data(input_file, chosen_loci_file, max_nchrom_gt2trace=0, min_non
     df['ntraces'] = 1
     df.loc[has_2traces_idx, 'ntraces'] = 2
     df.reset_index(inplace=True)
+
+    # ==== Count number of traces (per CHROM, per cell)
+    df = get_ntraces_per_cell(df)
 
     return df
 

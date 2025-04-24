@@ -4,20 +4,7 @@ import os
 from scipy.spatial.distance import pdist, squareform
 from iced.io import write_counts, write_lengths
 from tqdm import tqdm
-from parse_dna_merfish import filter_data_per_hmlg
-
-
-def get_index_of_loci(df, spacing=2.5, start_col='chrom_start', end_col='chrom_end'):
-    # XXX copied from above
-    df['idx_chrom'] = np.floor(df[[start_col, end_col]].mean(axis=1).values / 1e6 / spacing).astype(int)
-    df['idx_chrom'] = df[['chrom', 'idx_chrom']].groupby('chrom').apply(
-        lambda x: x - x.min(), include_groups=False).reset_index(level=0, drop=True)
-    
-    chromsizes_bins = (df.groupby('chrom').idx_chrom.max() + 1).sort_values(ascending=False)
-    cumsum_bins = pd.Series(index=chromsizes_bins.index, data=np.append(0, chromsizes_bins.values[:-1]).cumsum())
-    df['idx_genome'] = cumsum_bins.loc[df.chrom].values + df.idx_chrom
-
-    return df
+from parse_dna_merfish import filter_data_per_hmlg, get_index_of_loci
 
 
 def generate_counts_from_sc_dist(sc_dist_vec, contact_th=500, idx=None, exclude_missing_loci=False):
