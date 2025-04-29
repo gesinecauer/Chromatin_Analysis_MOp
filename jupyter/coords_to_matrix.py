@@ -38,8 +38,8 @@ def process_sc_distances(sc_dna_coords, idx, outdir, contact_th=500, name=None, 
     sc_dist_vec_file = os.path.join(outdir_matrix2d, f'{name}distances.vector_per_cell.npy')
     median_dist_matrix_file = os.path.join(outdir_matrix2d, f'{name}distances.median.npy')
     mean_dist_matrix_file = os.path.join(outdir_matrix2d, f'{name}distances.mean.npy')
-    # sc_counts_vec_file = os.path.join(outdir_matrix2d, f'{name}counts.vector_per_cell.cutoff{contact_th}.npy')
-    mean_counts_matrix_file = os.path.join(outdir_matrix2d, f'{name}counts.mean.cutoff{contact_th}.npy')
+    # sc_counts_vec_file = os.path.join(outdir_matrix2d, f'{name}counts.vector_per_cell.cutoff{contact_th:g}.npy')
+    mean_counts_matrix_file = os.path.join(outdir_matrix2d, f'{name}counts.mean.cutoff{contact_th:g}.npy')
 
     print(f"Counts: {mean_counts_matrix_file}", flush=True)
     
@@ -159,7 +159,7 @@ def main():
     parser.add_argument("--min_nonmissing_per_phased_locus", default=0.05, type=float)
     parser.add_argument("--outdir", type=str)
     parser.add_argument("--name", type=str)
-    parser.add_argument("--contact_th", default=500, type=int)
+    parser.add_argument("--contact_th", default=500, type=float)
     # parser.add_argument("--chrom", type=str, nargs='+')
     parser.add_argument('--verbose', default=False, action='store_true')
     args = parser.parse_args()
