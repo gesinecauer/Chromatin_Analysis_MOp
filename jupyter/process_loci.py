@@ -42,7 +42,7 @@ def get_evenly_spaced_loci(loci, spacing=2.5, cutoff_neighbor=0.05, cutoff_media
         loci = pd.read_csv(loci, sep="\t", header=None, names=['chrom', 'start_bp', 'end_bp'])
     else:
         loci.rename({'chrom_start': 'start_bp', 'chrom_end': 'end_bp'}, axis=1, inplace=True)
-    loci['chrom'] = loci.chrom.str.replace('chr', '', regex=False)
+    loci['chrom'] = loci.chrom.astype(str).str.replace('chr', '', regex=False)
     loci = loci.sort_values(['chrom', 'start_bp', 'end_bp']).reset_index(drop=True)
     loci = loci[loci.chrom != 'Y']
     loci['locus_size'] = (loci.end_bp - loci.start_bp) / 1e6  # Mb

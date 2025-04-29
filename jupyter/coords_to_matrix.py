@@ -8,12 +8,15 @@ from parse_dna_merfish import filter_data_per_hmlg, get_index_of_loci
 
 
 def generate_counts_from_sc_dist(sc_dist_vec, contact_th=500, idx=None, exclude_missing_loci=False):
-    print(contact_th)
-    print(np.nanmin(sc_dist_vec), np.nanmean(sc_dist_vec), np.nanmax(sc_dist_vec))
-    sc_counts_vec = (sc_dist_vec < contact_th).astype(float)
-    sc_counts_vec[np.isnan(sc_dist_vec)] = np.nan
-    res = squareform(np.nanmean(sc_counts_vec, axis=0))
-    # res = np.triu(squareform(np.nanmean(sc_counts_vec, axis=0)), 1)
+    if contact_th > np.nanmax(sc_dist_vec) or contact_th < np.nanmin(sc_dist_vec):
+        raise ValueError(f"{contact_th=}nm is not appropriate for sc distances, which range from"
+                         f" {np.nanmin(sc_dist_vec):g}nm to {np.nanmax(sc_dist_vec):g}nm")
+    # sc_counts_vec = (sc_dist_vec < contact_th).astype(float)
+    # sc_counts_vec[np.isnan(sc_dist_vec)] = np.nan
+    # res = squareform(np.nanmean(sc_counts_vec, axis=0))
+    pass_thresh = (sc_dist_vec < contact_th).astype(int).sum(axis=0)
+    has_data = np.invert(np.isnan(sc_dist_vec)).astype(int).sum(axis=0)
+    res = squareform(pass_thresh / has_data)
     if exclude_missing_loci:
         mean_counts_matrix = res
     else:
@@ -22,7 +25,7 @@ def generate_counts_from_sc_dist(sc_dist_vec, contact_th=500, idx=None, exclude_
         n = idx.max() + 1
         mean_counts_matrix = np.zeros((n, n))
         mean_counts_matrix[idx, idx.reshape(-1, 1)] = res
-    return sc_counts_vec, mean_counts_matrix
+    return mean_counts_matrix
 
 
 def process_sc_distances(sc_dna_coords, idx, outdir, contact_th=500, name=None, redo=False):
@@ -71,14 +74,16 @@ def process_sc_distances(sc_dna_coords, idx, outdir, contact_th=500, name=None, 
     else:
         mean_dist_matrix = np.load(mean_dist_matrix_file)
 
-    # if redo or not (os.path.exists(sc_counts_vec_file) and os.path.exists(mean_counts_matrix_file)):
+    # Check appropriateness of contact threshold
+    print(contact_th, np.nanmax(sc_dist_vec), np.nanmean(sc_dist_vec), np.nanmin(sc_dist_vec))
+    if contact_th > np.nanmax(sc_dist_vec) or contact_th < np.nanmin(sc_dist_vec):
+        raise ValueError(f"{contact_th=}nm is not appropriate for sc distances, which range from"
+                         f" {np.nanmin(sc_dist_vec):g}nm to {np.nanmax(sc_dist_vec):g}nm")
+
     if redo or not os.path.exists(mean_counts_matrix_file):
         print('Generate counts...', flush=True)
-        sc_counts_vec, mean_counts_matrix = generate_counts_from_sc_dist(
+        mean_counts_matrix = generate_counts_from_sc_dist(
             sc_dist_vec, contact_th=contact_th, idx=idx)
-        # if redo or not os.path.exists(sc_counts_vec_file):
-        #     print('                 ...saving contacts<thresh per cell', flush=True)
-        #     np.save(sc_counts_vec_file, sc_counts_vec)
         print('                 ...saving mean contacts across cells', flush=True)
         np.save(mean_counts_matrix_file, mean_counts_matrix)
     else:
@@ -164,7 +169,6 @@ def main():
         name = os.path.basename(os.path.dirname(args.data))
         if name.startswith('ntraces_chrom-cell_'):
             name = os.path.basename(os.path.dirname(os.path.dirname(args.data)))
-    print(name, flush=True)
 
     process_sc_dna_coords(
         input_file=args.data, min_nonmissing_per_phased_locus=args.min_nonmissing_per_phased_locus,

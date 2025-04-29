@@ -145,7 +145,7 @@ def filter_data(df, max_nchrom_gt2trace=0, min_nonmissing_per_locus=0.1, trace_m
     #         print((f"\tRemoved {nloci_removed}/{nloci_orig} LOCI that had the same approx midpoing location"
     #                "as another locus"), flush=True)
     #         print(f"\t ↳ Current n={len(df):,}, {len(df) / nrows_orig * 100:.3g}% of original", flush=True)
-    if (not df.chosen_loci.all()) or df.duplicated(subset=['idx_genome', 'trace_id']).any():
+    if not df.chosen_loci.all():
         loci_orig = df[['chrom', 'chrom_start', 'chrom_end']].drop_duplicates()
         loci_keep = get_evenly_spaced_loci(
             loci_orig, spacing=spacing, cutoff_neighbor=spacing / 10,
