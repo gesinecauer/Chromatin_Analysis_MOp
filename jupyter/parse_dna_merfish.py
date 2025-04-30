@@ -6,7 +6,8 @@ import numpy as np
 import pandas as pd
 from scipy.spatial.distance import pdist
 from tqdm import tqdm
-from process_loci import get_evenly_spaced_loci, get_index_of_loci
+from process_loci import get_evenly_spaced_loci #get_index_of_loci
+from interpolate import interp_all
 
 
 def remove_small_traces(df, nloci_per_chrom, min_nloci=3, min_nloci_ratio=0.1, by_chosen_loci_only=True):
@@ -68,8 +69,8 @@ def filter_data_per_hmlg(df, min_nonmissing_per_phased_locus=None, verbose=True)
 
 
 def filter_data(df, max_nchrom_gt2trace=0, min_nonmissing_per_locus=0.1, trace_min_nloci=3,
-                trace_min_nloci_ratio=0.1, by_chosen_loci_only=True, ntraces_per_cell=None, spacing=2.5,
-                verbose=True):
+                trace_min_nloci_ratio=0.1, by_chosen_loci_only=True, ntraces_per_cell=None, 
+                enforce_even_spacing=True, spacing=2.5, verbose=True):
     nrows_orig = len(df)
     if verbose:
         print(f"FILTERING... original n={len(df):,}", flush=True)
@@ -135,17 +136,7 @@ def filter_data(df, max_nchrom_gt2trace=0, min_nonmissing_per_locus=0.1, trace_m
                 '\n', '\n\t   '), flush=True)
 
     # ==== If multiple loci have same approx midpoint location, consolidate, retaining those with the most even spacing
-    # df = get_index_of_loci(df, spacing=spacing)
-    # if (not df.chosen_loci.all()) or df.duplicated(subset=['idx_genome', 'trace_id']).any():
-    #     nloci_orig = len(df[['chrom', 'chrom_order', 'trace_id']].drop_duplicates())
-    #     df.sort_values(['trace_id', 'idx_genome', 'chosen_loci'], ascending=True, inplace=True)  # Chosen loci are last
-    #     df.drop_duplicates(subset=['idx_genome', 'trace_id'], keep='last', inplace=True)  # Keep any chosen_loci (keep='last')
-    #     nloci_removed = nloci_orig - len(df[['chrom', 'chrom_order', 'trace_id']].drop_duplicates())
-    #     if verbose:
-    #         print((f"\tRemoved {nloci_removed}/{nloci_orig} LOCI that had the same approx midpoing location"
-    #                "as another locus"), flush=True)
-    #         print(f"\t ↳ Current n={len(df):,}, {len(df) / nrows_orig * 100:.3g}% of original", flush=True)
-    if not df.chosen_loci.all():
+    if enforce_even_spacing and not df.chosen_loci.all():
         loci_orig = df[['chrom', 'chrom_start', 'chrom_end']].drop_duplicates()
         loci_keep = get_evenly_spaced_loci(
             loci_orig, spacing=spacing, cutoff_neighbor=spacing / 10,
@@ -155,8 +146,6 @@ def filter_data(df, max_nchrom_gt2trace=0, min_nonmissing_per_locus=0.1, trace_m
             print((f"\tRemoved {len(loci_orig) - len(loci_keep)}/{len(loci_orig)} LOCI that had the same approx"
                    f" midpoint location as another locus (midpoints within {spacing}/10)"), flush=True)
             print(f"\t ↳ Current n={len(df):,}, {len(df) / nrows_orig * 100:.3g}% of original", flush=True)
-    
-    # assert (~loci.set_index(['chrom', 'start_bp', 'end_bp']).index.isin(loci_keep)).sum() == 0
 
     # ==== Remove traces where very few loci were detected
     # (if by_chosen_loci_only=True: only considering number of chosen loci, NOT number of total loci)
@@ -179,7 +168,7 @@ def filter_data(df, max_nchrom_gt2trace=0, min_nonmissing_per_locus=0.1, trace_m
 
     # ==== Remove chromosomes with where no cells have >1 trace
     # (if by_chosen_loci_only=True: only considering number of chosen loci, NOT number of total loci)
-    if (ntraces_per_cell is not None) and (ntraces_per_cell != 1):
+    if ntraces_per_cell is None:
         nchrom_orig = len(df.chrom.drop_duplicates())
         if by_chosen_loci_only:
             df = df.groupby('chrom').apply(
@@ -261,7 +250,6 @@ def label_homologs_for_chrom(df, df_cell_desc, chrom, compare_to_labeled_loci_wi
     mask = (df.chrom == chrom) & (df.cell_id == first_cell)
     df.loc[mask, 'hmlg'] = df.loc[mask, 'trace_id']
     
-    # cells_dict_items = cells.to_dict().items()
     for cell_id, ntraces in tqdm(cells.to_dict().items()):
         if cell_id == first_cell:  # First cell has already been labeled
             continue
@@ -289,32 +277,20 @@ def label_homologs_for_chrom(df, df_cell_desc, chrom, compare_to_labeled_loci_wi
             disterror, include_groups=False, struct_candidate=x).groupby(level=1).sum() for x in candidate]
         res = [x.err / x.n for x in res]  # Get MSE of distance matrices per pairing of traces 
     
-        # print('***')
-        # for i in range(ntraces):
-        #     print(i); print(res[i])
-    
         # Indices that determine how the candidate cell's trace(s) get paired to the pre-labled hmlgs
         pairingA = np.arange(ntraces) + 1  # Pair trace1 to hmlg1 (and trace2 to hmlg2)
         pairingB = 3 - pairingA  # Pair trace1 to hmlg2 (and trace2 to hmlg1)
-        # print(pairingA); print(pairingB)
     
         # Compare mean distance error for each pairing
         # (Can take the mean because the number of loci is the same for all traces in the candidate cell)
         resA = np.mean([res[i].loc[pairingA[i]] for i in range(ntraces)])
         resB = np.mean([res[i].loc[pairingB[i]] for i in range(ntraces)])
     
-        # print(resA); print(resB)
-    
-        # pairing = [pairingA, pairingB][np.argmin([resA, resB])]
-        # print(pairing)
-    
         # Assign the homolog itentities to candidate cell based on min distance error of the pairings
         mask = (df.chrom == chrom) & (df.cell_id == cell_id)
         if resA <= resB:
-            # print('A')
             df.loc[mask, 'hmlg'] = df.loc[mask, 'trace_id']
         else:
-            # print('B')
             df.loc[mask, 'hmlg'] = 3 - df.loc[mask, 'trace_id']
 
     # Assess labeling results
@@ -334,7 +310,8 @@ def get_ntraces_per_cell(df):
 
 
 def preprocess_data(input_file, chosen_loci_file, max_nchrom_gt2trace=0, min_nonmissing_per_locus=0.1, trace_min_nloci=3,
-                    trace_min_nloci_ratio=0.1, ntraces_per_cell=None, spacing=2.5, verbose=True):
+                    trace_min_nloci_ratio=0.1, by_chosen_loci_only=True, enforce_even_spacing=True, ntraces_per_cell=None,
+                    interpolate=False, spacing=2.5, verbose=True):
     df = pd.read_csv(input_file, dtype={
         'cell_id': str, 'rep_id': float, 'chrom': str, 'trace_id': int, 'chrom_order': int,
         'chrom_start': int, 'chrom_end': int, 'x': float, 'y': float, 'z': float})
@@ -352,23 +329,49 @@ def preprocess_data(input_file, chosen_loci_file, max_nchrom_gt2trace=0, min_non
     df = get_ntraces_per_cell(df)
 
     # ==== Filter data
+    if interpolate:  # Edit filtering criteria when interpolating
+        min_nonmissing_per_locus = 0
+        trace_min_nloci = 3
+        trace_min_nloci_ratio = 0
+        by_chosen_loci_only = False
+        enforce_even_spacing = False
     df = filter_data(
         df, max_nchrom_gt2trace=max_nchrom_gt2trace, min_nonmissing_per_locus=min_nonmissing_per_locus,
-        trace_min_nloci=trace_min_nloci, trace_min_nloci_ratio=trace_min_nloci_ratio, ntraces_per_cell=ntraces_per_cell,
-        spacing=spacing, verbose=verbose)
+        trace_min_nloci=trace_min_nloci, trace_min_nloci_ratio=trace_min_nloci_ratio,
+        by_chosen_loci_only=by_chosen_loci_only, ntraces_per_cell=ntraces_per_cell,
+        enforce_even_spacing=enforce_even_spacing, spacing=spacing, verbose=verbose)
+
+    # ==== Optional: Interpolate
+    if interpolate:
+        df = interp_all(df, spacing=spacing, verbose=verbose)
+        df['chrom_order'] = df.idx_chrom
 
     return df
 
 
 def process_data(input_file, chosen_loci_file, max_nchrom_gt2trace=0, min_nonmissing_per_locus=0.1, trace_min_nloci=3,
-                 trace_min_nloci_ratio=0.1, compare_to_labeled_loci_with_2_traces=False,
-                 ntraces_per_cell=None, spacing=2.5, chrom_to_filter=None, output_dir=None, verbose=True):
+                 trace_min_nloci_ratio=0.1, by_chosen_loci_only=True, ntraces_per_cell=None, enforce_even_spacing=True,
+                 interpolate=False, compare_to_labeled_loci_with_2_traces=False, spacing=2.5, chrom_to_filter=None, output_dir=None,
+                 verbose=True):
+    if output_dir is not None:
+        subdir = []
+        if ntraces_per_cell is not None:
+            subdir.append(f'ntraces_chrom-cell_{ntraces_per_cell}')
+        if interpolate:
+            subdir.append(f'interp')
+        if len(subdir) != 0:
+            output_dir = os.path.join(output_dir, '.'.join(subdir))
+        output_file = os.path.join(
+            output_dir, re.sub(r'\.csv$', '', os.path.basename(input_file)) + '.filter.hmlg.csv')
+        print(output_file, flush=True)
+
     # ==== Load & filter data
     df = preprocess_data(
         input_file, chosen_loci_file=chosen_loci_file, max_nchrom_gt2trace=max_nchrom_gt2trace,
         min_nonmissing_per_locus=min_nonmissing_per_locus, trace_min_nloci=trace_min_nloci,
-        trace_min_nloci_ratio=trace_min_nloci_ratio, ntraces_per_cell=ntraces_per_cell, spacing=spacing,
-        verbose=verbose)
+        trace_min_nloci_ratio=trace_min_nloci_ratio, by_chosen_loci_only=by_chosen_loci_only,
+        ntraces_per_cell=ntraces_per_cell, enforce_even_spacing=enforce_even_spacing,
+        interpolate=interpolate, spacing=spacing, verbose=verbose)
 
     # ==== Per chromosome: get ordering of cells in which homologs will be labled
     # Count number of traces in data (per LOCUS, per cell)
@@ -432,10 +435,6 @@ def process_data(input_file, chosen_loci_file, max_nchrom_gt2trace=0, min_nonmis
 
     # ==== Optionally save results
     if output_dir is not None:
-        if ntraces_per_cell is not None:
-            output_dir = os.path.join(output_dir, f'ntraces_chrom-cell_{ntraces_per_cell}')
-        output_file = os.path.join(
-            output_dir, re.sub(r'\.csv$', '', os.path.basename(input_file)) + '.filter.hmlg.csv')
         if len(chromosomes) != len(chrom_to_filter):
             output_file = os.path.join(
                 os.path.dirname(output_file), 'per_chrom',
@@ -459,23 +458,31 @@ def main():
     parser.add_argument("--min_nonmissing_per_locus", default=0.1, type=float)
     parser.add_argument("--trace_min_nloci", default=3, type=int)
     parser.add_argument("--trace_min_nloci_ratio", default=0.1, type=float)
+    parser.add_argument('--filter-via-all-loci', default=True,
+                        dest="by_chosen_loci_only", action='store_false')
+    parser.add_argument("--ntraces_per_cell", default=None, type=int)
+    parser.add_argument('--dont-enforce-even-spacing', default=True,
+                        dest="enforce_even_spacing", action='store_false')
+    parser.add_argument('--interpolate', default=False,
+                        action='store_true')
     parser.add_argument('--compare_to_labeled_loci_with_2_traces', default=False,
                         action='store_true')
-    parser.add_argument("--spacing", default=2.5, type=float)
-    # parser.add_argument("--ntraces_per_cell", type=int)
-    parser.add_argument("--ntraces_per_cell", default=None, type=int)
+    parser.add_argument("--spacing", default=2.5, type=float)    
     parser.add_argument("--chrom", type=str, nargs='+')
     parser.add_argument('--verbose', default=False, action='store_true')
+
+
+    
     args = parser.parse_args()
 
     output_dir = os.path.dirname(args.data)
     process_data(
         input_file=args.data, chosen_loci_file=args.chosen_loci, max_nchrom_gt2trace=args.max_nchrom_gt2trace,
         min_nonmissing_per_locus=args.min_nonmissing_per_locus, trace_min_nloci=args.trace_min_nloci,
-        trace_min_nloci_ratio=args.trace_min_nloci_ratio,
-        compare_to_labeled_loci_with_2_traces=args.compare_to_labeled_loci_with_2_traces,
-        chrom_to_filter=args.chrom, spacing=args.spacing, ntraces_per_cell=args.ntraces_per_cell,
-        output_dir=output_dir, verbose=args.verbose)
+        trace_min_nloci_ratio=args.trace_min_nloci_ratio, by_chosen_loci_only=args.by_chosen_loci_only,
+        ntraces_per_cell=args.ntraces_per_cell, enforce_even_spacing=args.enforce_even_spacing,
+        interpolate=args.interpolate, compare_to_labeled_loci_with_2_traces=args.compare_to_labeled_loci_with_2_traces,
+        chrom_to_filter=args.chrom, spacing=args.spacing, output_dir=output_dir, verbose=args.verbose)
 
 
 if __name__ == "__main__":
