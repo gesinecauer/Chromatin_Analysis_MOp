@@ -191,21 +191,23 @@ def get_nloci_in_trace(df):
 
 
 def summarize_labeling(df, prefix=''):
-    nmol_labeled = df.loc[~df.hmlg.isnull(), ['cell_id', 'trace_id', 'hmlg']].drop_duplicates().groupby(
-        ['trace_id', 'hmlg']).size().reset_index(level=[0, 1]).rename({0: 'nmol'}, axis=1)
+    nmol_labeled = df.loc[~df.hmlg.isnull(), ['cell_id', 'trace_id', 'hmlg', 'ntraces_per_cell']].drop_duplicates(
+        ).groupby(['trace_id', 'hmlg', 'ntraces_per_cell']).size().reset_index(level=[0, 1, 2]).rename({0: 'nmol'}, axis=1)
     nmol_labeled['pairing'] = 'A'
     nmol_labeled.loc[nmol_labeled.trace_id != nmol_labeled.hmlg, 'pairing'] = 'B'
     nmol_labeled = nmol_labeled.set_index('pairing').sort_index()
 
-    trace1 = nmol_labeled.loc[nmol_labeled.trace_id == 1, 'nmol']
-    trace2 = nmol_labeled.loc[nmol_labeled.trace_id == 2, 'nmol']
-    cells_with_only_1trace = trace1 - trace2
-
-    desc = [
-        "Pairings for cells with only 1 trace:",
-        pd.DataFrame(cells_with_only_1trace).reset_index().to_string(index=False),
-        "\nPairings for cells with 2 traces:",
-        pd.DataFrame(trace2).reset_index().to_string(index=False)]
+    desc = []
+    if (df.ntraces_per_cell == 1).sum():
+        ntraces_per_cell_1 = nmol_labeled.loc[nmol_labeled.ntraces_per_cell == 1, 'nmol'].drop_duplicates()
+        desc.extend([
+            "Pairings for cells with only 1 trace:",
+            pd.DataFrame(ntraces_per_cell_1).reset_index().to_string(index=False)])
+    if (df.ntraces_per_cell == 2).sum():
+        ntraces_per_cell_1 = nmol_labeled.loc[nmol_labeled.ntraces_per_cell == 2, 'nmol'].drop_duplicates()
+        desc.extend([
+            "Pairings for cells with 2 traces:",
+            pd.DataFrame(ntraces_per_cell_1).reset_index().to_string(index=False)])
 
     print(prefix + f'\n{prefix}'.join(desc), flush=True)
     

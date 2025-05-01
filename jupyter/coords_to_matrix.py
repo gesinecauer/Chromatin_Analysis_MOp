@@ -4,7 +4,8 @@ import os
 from scipy.spatial.distance import pdist, squareform
 from iced.io import write_counts, write_lengths
 from tqdm import tqdm
-from parse_dna_merfish import filter_data_per_hmlg, get_index_of_loci
+from parse_dna_merfish import filter_data_per_hmlg
+from process_loci import get_index_of_loci
 
 
 def generate_counts_from_sc_dist(sc_dist_vec, contact_th=500, idx=None, exclude_missing_loci=False):
@@ -102,7 +103,7 @@ def add_missing_loci(df, spacing=2.5):
     df_missing['idx_genome'] = df.idx_genome.min() + df_missing.idx_chrom
     df_missing['mid'] = df.mid.min() + (df_missing.idx_chrom * spacing * 1e6).astype(int)
     df_missing['has_data'] = 0
-    return pd.concat([df, df_missing]).reset_index()
+    return pd.concat([df, df_missing]).reset_index(drop=True)
 
 
 def process_sc_dna_coords(input_file, outdir=None, min_nonmissing_per_phased_locus=0.05, spacing=2.5,
@@ -116,7 +117,8 @@ def process_sc_dna_coords(input_file, outdir=None, min_nonmissing_per_phased_loc
     df, cov_per_locus = filter_data_per_hmlg(df, min_nonmissing_per_phased_locus=min_nonmissing_per_phased_locus, verbose=True)
     
     # Get index of each locus in the final counts/distance matrices
-    df = get_index_of_loci(df, spacing=spacing)
+    if 'idx_chrom' not in df.columns or 'idx_genome' not in df.columns:
+        df = get_index_of_loci(df, spacing=spacing)
     nbins_per_hmlg = df.idx_genome.max() + 1
     df['idx'] = nbins_per_hmlg * (df.hmlg - 1) + df.idx_genome
     # idx = np.arange(df.idx.min(), df.idx.max() + 1, dtype=int)
@@ -126,7 +128,7 @@ def process_sc_dna_coords(input_file, outdir=None, min_nonmissing_per_phased_loc
     lengths_df = lengths_df.merge(
         cov_per_locus.reset_index().drop('pass_cutoff', axis=1, errors='ignore'),
         on=['chrom', 'chrom_order'], how='left').drop('chrom_order', axis=1)
-    lengths_df['mid'] = lengths_df[['chrom_start', 'chrom_end']].mean(axis=1)  # Mb
+    lengths_df['mid'] = lengths_df[['chrom_start', 'chrom_end']].mean(axis=1)
     offset = lengths_df['mid'] % (spacing * 1e6)
     lengths_df['mid'] = (lengths_df['mid'] - offset).astype(int) + int(round(offset.median()))
     lengths_df['chrom'] = 'chr' + lengths_df.chrom.astype(str)
