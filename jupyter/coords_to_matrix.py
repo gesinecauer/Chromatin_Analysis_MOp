@@ -10,23 +10,27 @@ from process_loci import get_index_of_loci
 
 def generate_counts_from_sc_dist(sc_dist_vec, contact_th=500, idx=None, exclude_missing_loci=False):
     if contact_th > np.nanmax(sc_dist_vec) or contact_th < np.nanmin(sc_dist_vec):
-        raise ValueError(f"{contact_th=}nm is not appropriate for sc distances, which range from"
-                         f" {np.nanmin(sc_dist_vec):g}nm to {np.nanmax(sc_dist_vec):g}nm")
+        raise ValueError(f"{contact_th=}μm is not appropriate for sc distances, which range from"
+                         f" {np.nanmin(sc_dist_vec):g}μm to {np.nanmax(sc_dist_vec):g}μm")
     # sc_counts_vec = (sc_dist_vec < contact_th).astype(float)
     # sc_counts_vec[np.isnan(sc_dist_vec)] = np.nan
     # res = squareform(np.nanmean(sc_counts_vec, axis=0))
     pass_thresh = (sc_dist_vec < contact_th).astype(int).sum(axis=0)
     has_data = np.invert(np.isnan(sc_dist_vec)).astype(int).sum(axis=0)
     res = squareform(pass_thresh / has_data)
+    nonmissing = squareform(has_data)
     if exclude_missing_loci:
         mean_counts_matrix = res
+        nonmissing_per_locus_pair = nonmissing
     else:
         if idx is None:
             raise ValueError("Must supply idx to make complete counts matrix, including rows/cols of missing loci")
         n = idx.max() + 1
         mean_counts_matrix = np.zeros((n, n))
         mean_counts_matrix[idx, idx.reshape(-1, 1)] = res
-    return mean_counts_matrix
+        nonmissing_per_locus_pair = np.zeros((n, n))
+        nonmissing_per_locus_pair[idx, idx.reshape(-1, 1)] = nonmissing
+    return mean_counts_matrix, nonmissing_per_locus_pair
 
 
 def process_sc_distances(sc_dna_coords, idx, outdir, contact_th=500, name=None, redo=False):
@@ -41,13 +45,15 @@ def process_sc_distances(sc_dna_coords, idx, outdir, contact_th=500, name=None, 
     mean_dist_matrix_file = os.path.join(outdir_matrix2d, f'{name}distances.mean.npy')
     # sc_counts_vec_file = os.path.join(outdir_matrix2d, f'{name}counts.vector_per_cell.cutoff{contact_th:g}.npy')
     mean_counts_matrix_file = os.path.join(outdir_matrix2d, f'{name}counts.mean.cutoff{contact_th:g}.npy')
+    nonmissing_per_locus_pair_file = os.path.join(outdir_matrix2d, f'{name}num_nonmissing.npy')
 
     print(f"Counts: {mean_counts_matrix_file}", flush=True)
     
-    all_files = [sc_dist_vec_file, median_dist_matrix_file, mean_dist_matrix_file, mean_counts_matrix_file]
+    all_files = [sc_dist_vec_file, median_dist_matrix_file, mean_dist_matrix_file, mean_counts_matrix_file,
+                nonmissing_per_locus_pair_file]
     if (not redo) and all([os.path.exists(f) for f in all_files]):
         return {'counts': np.load(mean_counts_matrix_file), 'dis_mean': np.load(mean_dist_matrix_file),
-                'dis_median': np.load(median_dist_matrix_file)}
+                'dis_median': np.load(median_dist_matrix_file), 'nonmissing': np.load(nonmissing_per_locus_pair_file)}
     
     if isinstance(sc_dna_coords, str):
         print('Loading sc DNA coords...', flush=True)
@@ -78,23 +84,27 @@ def process_sc_distances(sc_dna_coords, idx, outdir, contact_th=500, name=None, 
     # Check appropriateness of contact threshold
     print(contact_th, np.nanmax(sc_dist_vec), np.nanmean(sc_dist_vec), np.nanmin(sc_dist_vec))
     if contact_th > np.nanmax(sc_dist_vec) or contact_th < np.nanmin(sc_dist_vec):
-        raise ValueError(f"{contact_th=}nm is not appropriate for sc distances, which range from"
-                         f" {np.nanmin(sc_dist_vec):g}nm to {np.nanmax(sc_dist_vec):g}nm")
+        raise ValueError(f"{contact_th=}μm is not appropriate for sc distances, which range from"
+                         f" {np.nanmin(sc_dist_vec):g}μm to {np.nanmax(sc_dist_vec):g}μm")
 
-    if redo or not os.path.exists(mean_counts_matrix_file):
+    if redo or not (os.path.exists(mean_counts_matrix_file) and os.path.exists(nonmissing_per_locus_pair_file)):
         print('Generate counts...', flush=True)
-        mean_counts_matrix = generate_counts_from_sc_dist(
+        mean_counts_matrix, nonmissing_per_locus_pair = generate_counts_from_sc_dist(
             sc_dist_vec, contact_th=contact_th, idx=idx)
         print('                 ...saving mean contacts across cells', flush=True)
-        np.save(mean_counts_matrix_file, mean_counts_matrix)
+        if not os.path.exists(mean_counts_matrix_file):
+            np.save(mean_counts_matrix_file, mean_counts_matrix)
+        if not os.path.exists(nonmissing_per_locus_pair_file):
+            np.save(nonmissing_per_locus_pair_file, nonmissing_per_locus_pair)
     else:
         mean_counts_matrix = np.load(mean_counts_matrix_file)
 
     print('Done!', flush=True)
-    return {'counts': mean_counts_matrix, 'dis_mean': mean_dist_matrix, 'dis_median': median_dist_matrix}
+    return {'counts': mean_counts_matrix, 'dis_mean': mean_dist_matrix, 'dis_median': median_dist_matrix, 'nonmissing': nonmissing_per_locus_pair}
 
 
 def add_missing_loci(df, spacing=2.5):
+    assert df.idx_chrom.min() == 0  # (Shouldn't be including loci at beginning of chrom if they're always NaN)
     idx_chrom = np.arange(df.idx_chrom.min(), df.idx_chrom.max() + 1, dtype=int)
     if len(idx_chrom) == len(df):
         return df
@@ -107,18 +117,18 @@ def add_missing_loci(df, spacing=2.5):
 
 
 def process_sc_dna_coords(input_file, outdir=None, min_nonmissing_per_phased_locus=0.05, spacing=2.5,
-                          contact_th=500, redo=False, name=None):
+                          contact_th=500, redo=False, name=None, verbose=False):
 
     if outdir is None:
         outdir = os.path.dirname(input_file)
     df = pd.read_csv(input_file)
 
     # Remove loci where <[cutoff]% of cells are non-missing from one or more of the traces
-    df, cov_per_locus = filter_data_per_hmlg(df, min_nonmissing_per_phased_locus=min_nonmissing_per_phased_locus, verbose=True)
+    df, cov_per_locus = filter_data_per_hmlg(df, min_nonmissing_per_phased_locus=min_nonmissing_per_phased_locus, verbose=verbose)
     
     # Get index of each locus in the final counts/distance matrices
-    if 'idx_chrom' not in df.columns or 'idx_genome' not in df.columns:
-        df = get_index_of_loci(df, spacing=spacing)
+    #if 'idx_chrom' not in df.columns or 'idx_genome' not in df.columns:
+    df = get_index_of_loci(df, spacing=spacing)  # Redo indexing, even if it's been done before
     nbins_per_hmlg = df.idx_genome.max() + 1
     df['idx'] = nbins_per_hmlg * (df.hmlg - 1) + df.idx_genome
     # idx = np.arange(df.idx.min(), df.idx.max() + 1, dtype=int)
@@ -163,7 +173,8 @@ def main():
     parser.add_argument("--name", type=str)
     parser.add_argument("--contact_th", default=500, type=float)
     # parser.add_argument("--chrom", type=str, nargs='+')
-    parser.add_argument('--verbose', default=False, action='store_true')
+    parser.add_argument('--verbose', default=True, action='store_true')
+    parser.add_argument('--silent', dest='verbose', default=True, action='store_false')
     args = parser.parse_args()
 
     name = args.name
@@ -174,7 +185,7 @@ def main():
 
     process_sc_dna_coords(
         input_file=args.data, min_nonmissing_per_phased_locus=args.min_nonmissing_per_phased_locus,
-        spacing=args.spacing, outdir=args.outdir, name=name, contact_th=args.contact_th)
+        spacing=args.spacing, outdir=args.outdir, name=name, contact_th=args.contact_th, verbose=args.verbose)
 
 
 if __name__ == "__main__":
