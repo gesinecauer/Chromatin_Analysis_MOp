@@ -51,9 +51,11 @@ def process_sc_distances(sc_dna_coords, idx, outdir, contact_th=500, name=None, 
     
     all_files = [sc_dist_vec_file, median_dist_matrix_file, mean_dist_matrix_file, mean_counts_matrix_file,
                 nonmissing_per_locus_pair_file]
-    if (not redo) and all([os.path.exists(f) for f in all_files]):
+    missing_files = [os.path.basename(f) for f in all_files if not os.path.exists(f)]
+    if (not redo) and len(missing_files) > 0:
         return {'counts': np.load(mean_counts_matrix_file), 'dis_mean': np.load(mean_dist_matrix_file),
                 'dis_median': np.load(median_dist_matrix_file), 'nonmissing': np.load(nonmissing_per_locus_pair_file)}
+    print(f"Creating files in {outdir_matrix2d}:\n\t- " + '\n\t- '.join(missing_files), flush=True)
     
     if isinstance(sc_dna_coords, str):
         print('Loading sc DNA coords...', flush=True)
