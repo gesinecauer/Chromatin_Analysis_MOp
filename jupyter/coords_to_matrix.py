@@ -41,6 +41,8 @@ def process_sc_distances(sc_dna_coords, idx, outdir, contact_th=500, name=None, 
     n = idx.max() + 1
 
     sc_dist_vec_file = os.path.join(outdir_matrix2d, f'{name}distances.vector_per_cell.npy')
+    if os.path.exists(sc_dist_vec_file + '.gz') and not os.path.exists(sc_dist_vec_file):
+        sc_dist_vec_file = sc_dist_vec_file + '.gz'
     median_dist_matrix_file = os.path.join(outdir_matrix2d, f'{name}distances.median.npy')
     mean_dist_matrix_file = os.path.join(outdir_matrix2d, f'{name}distances.mean.npy')
     # sc_counts_vec_file = os.path.join(outdir_matrix2d, f'{name}counts.vector_per_cell.cutoff{contact_th:g}.npy')

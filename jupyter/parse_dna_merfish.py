@@ -190,7 +190,7 @@ def get_nloci_in_trace(df):
     return pd.Series({'nloci': len(df), 'nloci_2trace': (df.ntraces == 2).sum()})
 
 
-def summarize_labeling(df, prefix=''):
+def summarize_labeling(df, prefix='', verbose=True):
     nmol_labeled = df.loc[~df.hmlg.isnull(), ['cell_id', 'trace_id', 'hmlg', 'ntraces_per_cell']].drop_duplicates(
         ).groupby(['trace_id', 'hmlg', 'ntraces_per_cell']).size().reset_index(level=[0, 1, 2]).rename({0: 'nmol'}, axis=1)
     nmol_labeled['pairing'] = 'A'
@@ -209,7 +209,8 @@ def summarize_labeling(df, prefix=''):
             "Pairings for cells with 2 traces:",
             pd.DataFrame(ntraces_per_cell_1).reset_index().to_string(index=False)])
 
-    print(prefix + f'\n{prefix}'.join(desc), flush=True)
+    if verbose:
+        print(prefix + f'\n{prefix}'.join(desc), flush=True)
     
     return nmol_labeled
 
@@ -229,7 +230,8 @@ def disterror(struct_hmlg, struct_candidate):
     return pd.Series({'err': np.square(dis_candidate - dis_hmlg).sum(), 'n': dis_hmlg.size})
 
 
-def label_homologs_for_chrom(df, df_cell_desc, chrom, compare_to_labeled_loci_with_2_traces=False, verbose=True):
+def label_homologs_for_chrom(df, df_cell_desc, chrom, compare_to_labeled_loci_with_2_traces=False, 
+                             compare_to_2traces_per_cell=False, compare_to_minimal_cells=False, verbose=True):
     if verbose:
         print(f"\nASSIGNING HOMOLOGS FOR: chr{chrom}", flush=True)
     
@@ -246,24 +248,41 @@ def label_homologs_for_chrom(df, df_cell_desc, chrom, compare_to_labeled_loci_wi
     if 2 not in cells.drop_duplicates().values:
         raise NotImplementedError
 
+    # Which loci have data for this chromosome?
+    loci_with_data = df.loc[df.chrom == chrom, 'chrom_order'].drop_duplicates().values
+    all_loci_labeled = False
+
     # Arbitrarily label homologs of the first cell
     first_cell = cells.index[0]
     assert cells.loc[first_cell] == 2  # The first cell has 2 traces for the give chrom
     mask = (df.chrom == chrom) & (df.cell_id == first_cell)
     df.loc[mask, 'hmlg'] = df.loc[mask, 'trace_id']
     
-    for cell_id, ntraces in tqdm(cells.to_dict().items()):
+    for cell_id, ntraces_per_cell in tqdm(cells.to_dict().items()):
         if cell_id == first_cell:  # First cell has already been labeled
+            df_chrom = df[df.chrom == chrom]  # Initial selection of data for chrom
+            ntraces_per_prev_cell = 2
             continue
 
         # Re-select data for chrom (because 'hmlg' label in 'df' got updated for prev cell)
-        df_chrom = df[(df.chrom == chrom)]
+        if ntraces_per_prev_cell == 2 or not (compare_to_labeled_loci_with_2_traces or compare_to_2traces_per_cell):
+            # Check if all loci have been labled at least once
+            if compare_to_minimal_cells and not all_loci_labeled:
+                # FIXME actually want to check loci with data that's labeled *in BOTH homologs*
+                loci_with_labeled_data = df.loc[(df.chrom == chrom) & (
+                    ~df.hmlg.isnull()), 'chrom_order'].drop_duplicates().values
+                if len(loci_with_data) == len(loci_with_labeled_data):
+                    all_loci_labeled = True
+
+            if all_loci_labeled or not compare_to_minimal_cells:
+                # Only re-select data if the new data will be used as a baseline for labeling
+                df_chrom = df[df.chrom == chrom]
     
         # Get all traces for the candidate cell, only including loci present in all of the candidate cell's traces
-        candidate = df_chrom.loc[(df_chrom.cell_id == cell_id) & (df_chrom.ntraces == ntraces)]
+        candidate = df_chrom.loc[(df_chrom.cell_id == cell_id) & (df_chrom.ntraces == ntraces_per_cell)]
         candidate = [candidate.loc[
                      candidate.trace_id == trace_id,
-                     ['chrom_order', 'x', 'y', 'z']] for trace_id in np.arange(1, ntraces + 1)]
+                     ['chrom_order', 'x', 'y', 'z']] for trace_id in np.arange(1, ntraces_per_cell + 1)]
         loci_candidate = candidate[0].chrom_order.values
     
         # Get all labeled traces from previous cells, only including loci present in all of the candidate cell's traces
@@ -280,13 +299,13 @@ def label_homologs_for_chrom(df, df_cell_desc, chrom, compare_to_labeled_loci_wi
         res = [x.err / x.n for x in res]  # Get MSE of distance matrices per pairing of traces 
     
         # Indices that determine how the candidate cell's trace(s) get paired to the pre-labled hmlgs
-        pairingA = np.arange(ntraces) + 1  # Pair trace1 to hmlg1 (and trace2 to hmlg2)
+        pairingA = np.arange(ntraces_per_cell) + 1  # Pair trace1 to hmlg1 (and trace2 to hmlg2)
         pairingB = 3 - pairingA  # Pair trace1 to hmlg2 (and trace2 to hmlg1)
     
         # Compare mean distance error for each pairing
         # (Can take the mean because the number of loci is the same for all traces in the candidate cell)
-        resA = np.mean([res[i].loc[pairingA[i]] for i in range(ntraces)])
-        resB = np.mean([res[i].loc[pairingB[i]] for i in range(ntraces)])
+        resA = np.mean([res[i].loc[pairingA[i]] for i in range(ntraces_per_cell)])
+        resB = np.mean([res[i].loc[pairingB[i]] for i in range(ntraces_per_cell)])
     
         # Assign the homolog itentities to candidate cell based on min distance error of the pairings
         mask = (df.chrom == chrom) & (df.cell_id == cell_id)
@@ -294,6 +313,9 @@ def label_homologs_for_chrom(df, df_cell_desc, chrom, compare_to_labeled_loci_wi
             df.loc[mask, 'hmlg'] = df.loc[mask, 'trace_id']
         else:
             df.loc[mask, 'hmlg'] = 3 - df.loc[mask, 'trace_id']
+
+        # Keep track of this cell's ntraces_per_cell when analyzing the next cell
+        ntraces_per_prev_cell = ntraces_per_cell
 
     # Assess labeling results
     if verbose:
@@ -314,6 +336,8 @@ def get_ntraces_per_cell(df):
 def preprocess_data(input_file, chosen_loci_file, max_nchrom_gt2trace=0, min_nonmissing_per_locus=0.1, trace_min_nloci=3,
                     trace_min_nloci_ratio=0.1, by_chosen_loci_only=True, enforce_even_spacing=True, ntraces_per_cell=None,
                     interpolate=False, spacing=2.5, verbose=True):
+    if os.path.exists(input_file + '.gz') and not os.path.exists(input_file):
+        input_file = input_file + '.gz'
     df = pd.read_csv(input_file, dtype={
         'cell_id': str, 'rep_id': float, 'chrom': str, 'trace_id': int, 'chrom_order': int,
         'chrom_start': int, 'chrom_end': int, 'x': float, 'y': float, 'z': float})
@@ -351,14 +375,39 @@ def preprocess_data(input_file, chosen_loci_file, max_nchrom_gt2trace=0, min_non
     return df
 
 
+def restrict_to_equal_nmol_per_hmlg(df, cell_desc_file, cutoff_ratio=1):
+    cell_order_per_chrom = pd.read_csv(cell_desc_file)[['cell_id', 'chrom']].reset_index().rename(
+        {0: 'labeling_order'}, axis=1)
+    df = df.merge(cell_order_per_chrom, on=['cell_id', 'chrom'], how='left')
+
+    min_nmol_per_hmlg = df[['chrom', 'hmlg', 'cell_id']].drop_duplicates().groupby(
+        ['chrom', 'hmlg']).size().reset_index(level=1).groupby(level=0).min().reset_index().rename(
+        {0: 'min_nmol'}, axis=1)
+    df = df.merge(min_nmol_per_hmlg, on=['chrom', 'hmlg'], how='left')
+    df = df[(df.labeling_order + 1) / df.min_nmol <= cutoff_ratio]
+
+    # df.sort_values(['chrom', 'hmlg', 'labeling_order'], ascending=True, inplace=True)
+    # df = df.groupby(['chrom', 'hmlg']).apply(FIXME, include_groups=False).reset_index(level=[0, 1])
+    
+    df.drop(['labeling_order', 'min_nmol'], axis=1, inplace=True)
+    return df
+    
+
+
 def process_data(input_file, chosen_loci_file, max_nchrom_gt2trace=0, min_nonmissing_per_locus=0.1, trace_min_nloci=3,
                  trace_min_nloci_ratio=0.1, by_chosen_loci_only=True, ntraces_per_cell=None, enforce_even_spacing=True,
-                 interpolate=False, compare_to_labeled_loci_with_2_traces=False, spacing=2.5, chrom_to_filter=None, output_dir=None,
-                 verbose=True):
+                 interpolate=False, compare_to_labeled_loci_with_2_traces=False, compare_to_2traces_per_cell=False,
+                 compare_to_minimal_cells=False, spacing=2.5, chrom_to_filter=None, output_dir=None, verbose=True):
     if output_dir is not None:
         subdir = []
         if ntraces_per_cell is not None:
             subdir.append(f'ntraces_chrom-cell_{ntraces_per_cell}')
+        if compare_to_labeled_loci_with_2_traces:
+            subdir.append('compare_to_2traces_per_locus')
+        elif compare_to_2traces_per_cell and ntraces_per_cell is None:
+            subdir.append('compare_to_2traces_per_chrom-cell')
+        if compare_to_minimal_cells:
+            subdir.append('compare_to_minimal_cells')
         if interpolate:
             subdir.append(f'interp')
         if len(subdir) != 0:
@@ -366,6 +415,7 @@ def process_data(input_file, chosen_loci_file, max_nchrom_gt2trace=0, min_nonmis
         output_file = os.path.join(
             output_dir, re.sub(r'\.csv$', '', os.path.basename(input_file)) + '.filter.hmlg.csv')
         print(output_file, flush=True)
+        os.makedirs(output_dir, exist_ok=True)
 
     # ==== Load & filter data
     df = preprocess_data(
@@ -399,6 +449,10 @@ def process_data(input_file, chosen_loci_file, max_nchrom_gt2trace=0, min_nonmis
         level=[0, 1, 2, 3, 4]).rename({0: 'ntraces_in_cell'}, axis=1)
     df_cell_desc.sort_values(['chrom', 'ntraces_in_cell'] + cols_to_sort, ascending=False, inplace=True)
 
+    # Save cell/chrom info
+    if output_dir is not None:
+        df_cell_desc.to_csv(os.path.join(output_dir, 'cell_data_for_hmlg_labeling.csv'), index=False)
+
     # ==== Assign homolog identities
     # Choose which chromosomes to assign homolog identities for
     chromosomes = df_cell_desc.chrom.drop_duplicates().sort_values().values
@@ -421,15 +475,20 @@ def process_data(input_file, chosen_loci_file, max_nchrom_gt2trace=0, min_nonmis
         print("\tWhen comparing candidate cell's traces to homologs of previously labeled cells...", flush=True)
         if compare_to_labeled_loci_with_2_traces:
             print("\t...require each previously labeled cell's loci to be present in BOTH homologs!", flush=True)
+        elif compare_to_2traces_per_cell:
+            print("\t...only compare to previously labeled cells in which BOTH homologs were detected!", flush=True)
         else:
             print("\t...compare to all loci in each previously labeled cell (even if it's only present in 1 homolog)",
                   flush=True)
+        if compare_to_minimal_cells:
+            print("\t...compare to minimal set of previously labeled cells in which all loci are represented", flush=True)
     df['hmlg'] = None
     df.sort_values(['chrom', 'cell_id', 'chrom_order'], inplace=True)
     for chrom in chrom_to_filter:
         df = label_homologs_for_chrom(
             df, df_cell_desc=df_cell_desc, chrom=chrom,
             compare_to_labeled_loci_with_2_traces=compare_to_labeled_loci_with_2_traces,
+            compare_to_2traces_per_cell=compare_to_2traces_per_cell, compare_to_minimal_cells=compare_to_minimal_cells,
             verbose=verbose)
 
     # ==== Only keep 'chosen' loci (eg those spaced 2.5Mb apart across the genome)
@@ -469,6 +528,8 @@ def main():
                         action='store_true')
     parser.add_argument('--compare_to_labeled_loci_with_2_traces', default=False,
                         action='store_true')
+    parser.add_argument('--compare_to_2traces_per_cell', default=False, action='store_true')
+    parser.add_argument('--compare_to_minimal_cells', default=False, action='store_true')
     parser.add_argument("--spacing", default=2.5, type=float)    
     parser.add_argument("--chrom", type=str, nargs='+')
     parser.add_argument('--verbose', default=False, action='store_true')
@@ -484,6 +545,7 @@ def main():
         trace_min_nloci_ratio=args.trace_min_nloci_ratio, by_chosen_loci_only=args.by_chosen_loci_only,
         ntraces_per_cell=args.ntraces_per_cell, enforce_even_spacing=args.enforce_even_spacing,
         interpolate=args.interpolate, compare_to_labeled_loci_with_2_traces=args.compare_to_labeled_loci_with_2_traces,
+        compare_to_2traces_per_cell=args.compare_to_2traces_per_cell, compare_to_minimal_cells=args.compare_to_minimal_cells,
         chrom_to_filter=args.chrom, spacing=args.spacing, output_dir=output_dir, verbose=args.verbose)
 
 
