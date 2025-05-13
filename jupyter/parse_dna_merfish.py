@@ -215,7 +215,7 @@ def summarize_labeling(df, prefix='', verbose=True):
     return nmol_labeled
 
 
-def disterror(struct_hmlg, struct_candidate):
+def disterror(struct_hmlg, struct_candidate, invert_distances=False, nrmse_denom=None):
     # While struct_hmlg only includes loci present in struct_candidate...
     # ...we need to make sure that struct_candidate only includes loci present in struct_hmlg
     # for this particular trace of this particular previously labeled cell
@@ -224,17 +224,55 @@ def disterror(struct_hmlg, struct_candidate):
     # Get bead-bead distances
     dis_candidate = pdist(struct_candidate[['x', 'y', 'z']].values)
     dis_hmlg = pdist(struct_hmlg[['x', 'y', 'z']].values)
+    # Get distance error
+    if invert_distances:
+        dis_candidate = np.power(dis_candidate, -1)
+        dis_hmlg = np.power(dis_hmlg, -1)
+    err = np.square(dis_candidate - dis_hmlg)
+    if nrmse_denom is not None:
+        idx = get_distance_matrix_idx(struct_candidate)
+        err /= nrmse_denom.loc[idx].values
+    err = err.sum()
     # Take the sum of the squared error and record the number of bins ('n') so that
     # we can more easily aggregate data across previously labeled cells
     # (Don't want to take the mean of multiple MSE values since 'n' might differ per cell)
-    return pd.Series({'err': np.square(dis_candidate - dis_hmlg).sum(), 'n': dis_hmlg.size})
+    return pd.Series({'err': err, 'n': dis_hmlg.size})
+
+
+def get_distance_matrix_idx(df):
+    i, j = np.triu_indices(len(df), 1)
+    row = df[['chrom_order']].values[i]
+    col = df[['chrom_order']].values[j]
+    idx = list(map(tuple, np.stack([row.ravel(), col.ravel()], axis=1)))
+    return idx
+
+
+def get_distance_matrix(df, invert_distances=False):
+    dis = pdist(df[['x', 'y', 'z']].values)
+    if invert_distances:
+        dis = np.power(dis, -1)
+    idx = get_distance_matrix_idx(df)
+    return pd.DataFrame.from_dict({'idx': idx, 'dis': dis})
+
+
+# def get_nrmse_denom(df, nrmse_method):
+#     if nrmse_method is None or nrmse_method not in ('mean', 'range', 'iqr'):
+#         raise ValueError(f"{nrmse_method=}, must be 'mean', 'range' 'iqr', or None.")
+#     pass
 
 
 def label_homologs_for_chrom(df, df_cell_desc, chrom, compare_to_labeled_loci_with_2_traces=False, 
                              compare_to_2traces_per_cell=False, compare_to_minimal_cells=False, 
-                             compared_loci_cutoff=None, verbose=True):
+                             compared_loci_cutoff=None, inverse_disterror=False, nrmse_method=None, 
+                             root_mse=False, verbose=True):
     if verbose:
         print(f"\nASSIGNING HOMOLOGS FOR: chr{chrom}", flush=True)
+    if nrmse_method is not None:
+        nrmse_method = nrmse_method.lower()
+        if nrmse_method not in ('mean', 'range', 'iqr'):
+            raise ValueError(f"{nrmse_method=}, must be 'mean', 'range' 'iqr', or None.")
+        if nrmse_method != 'mean':
+            raise NotImplementedError
     
     cells = df_cell_desc.loc[df_cell_desc.chrom == chrom, ['cell_id', 'ntraces_in_cell']].set_index(
         'cell_id').ntraces_in_cell
@@ -249,6 +287,9 @@ def label_homologs_for_chrom(df, df_cell_desc, chrom, compare_to_labeled_loci_wi
     if 2 not in cells.drop_duplicates().values:
         raise NotImplementedError
 
+    # Sort values (in case using NRMSE)
+    df = df.sort_values(['cell_id', 'trace_id', 'chrom_order']).reset_index(drop=True)
+
     # Select which loci to use for this chromosome
     chrom_loci_to_compare = df.chrom == chrom  # Using all loci for the given chrom
     if compared_loci_cutoff is not None and compared_loci_cutoff > 0:
@@ -260,14 +301,30 @@ def label_homologs_for_chrom(df, df_cell_desc, chrom, compare_to_labeled_loci_wi
         chrom_loci_to_compare = chrom_loci_to_compare & df.chrom_order.isin(top_loci)
 
     # Which loci have data for this chromosome?
-    loci_with_data = df.loc[chrom_loci_to_compare, 'chrom_order'].drop_duplicates().values
+    loci_with_data = df.loc[chrom_loci_to_compare, 'chrom_order'].drop_duplicates().sort_values().values
     all_loci_labeled = False
+
+    # Get distance matrix mean (across molecules) for each locus pair
+    nrmse_denom = None
+    if nrmse_method is not None and nrmse_method.lower() == 'mean':
+        print(f"Setting up for NRMSE (method={nrmse_method})...")
+        if compare_to_2traces_per_cell:
+            df_tmp = df[df.ntraces_per_cell == 2]
+        else:
+            df_tmp = df
+        nrmse_denom = df_tmp.groupby(['cell_id', 'trace_id']).apply(
+            get_distance_matrix, include_groups=False, invert_distances=inverse_disterror).reset_index(
+            [0, 1, 2], drop=True).groupby('idx').dis.mean()
+        nrmse_denom = nrmse_denom ** 2  # Because will divide by denom before taking sqrt
+        print("\t...Done with setting up for NRMSE!")
+        
 
     # Arbitrarily label homologs of the first cell
     first_cell = cells.index[0]
     assert cells.loc[first_cell] == 2  # The first cell has 2 traces for the give chrom
     mask = (df.chrom == chrom) & (df.cell_id == first_cell)
     df.loc[mask, 'hmlg'] = df.loc[mask, 'trace_id']
+
     
     for cell_id, ntraces_per_cell in tqdm(cells.to_dict().items()):
         if cell_id == first_cell:  # First cell has already been labeled
@@ -307,8 +364,11 @@ def label_homologs_for_chrom(df, df_cell_desc, chrom, compare_to_labeled_loci_wi
     
         # Calculate distance error between each candidate trace and the labeled traces from each previous cell
         res = [hmlgs.groupby(['cell_id', 'hmlg']).apply(
-            disterror, include_groups=False, struct_candidate=x).groupby(level=1).sum() for x in candidate]
+            disterror, include_groups=False, struct_candidate=x,
+            invert_distances=inverse_disterror, nrmse_denom=nrmse_denom).groupby(level=1).sum() for x in candidate]
         res = [x.err / x.n for x in res]  # Get MSE of distance matrices per pairing of traces 
+        if root_mse or nrmse_method is not None:
+            res = [np.sqrt(x) for x in res]
     
         # Indices that determine how the candidate cell's trace(s) get paired to the pre-labled hmlgs
         pairingA = np.arange(ntraces_per_cell) + 1  # Pair trace1 to hmlg1 (and trace2 to hmlg2)
@@ -416,31 +476,52 @@ def restrict_to_equal_nmol_per_hmlg(df, cell_desc_file, cutoff_ratio=1, verbose=
     return df
 
 
+def get_full_outdir(output_dir, ntraces_per_cell=None, compare_to_labeled_loci_with_2_traces=False,
+                    compare_to_2traces_per_cell=False, compared_loci_cutoff=None, compare_to_minimal_cells=False,
+                   interpolate=False, inverse_disterror=False, nrmse_method=None, root_mse=False):
+    subdir = []
+    if ntraces_per_cell is not None:
+        subdir.append(f'ntraces_chrom-cell_{ntraces_per_cell}')
+    if compare_to_labeled_loci_with_2_traces:
+        subdir.append('compare_to_2traces_per_locus')
+    elif compare_to_2traces_per_cell and ntraces_per_cell is None:
+        subdir.append('compare_to_2traces_per_chrom-cell')
+    if compared_loci_cutoff is not None and compared_loci_cutoff > 0:
+        subdir.append(f'compared_loci_{compared_loci_cutoff * 100:d}p')
+    if compare_to_minimal_cells:
+        subdir.append('compare_to_minimal_cells')
+    if interpolate:
+        subdir.append('interp')
+    if inverse_disterror or root_mse or nrmse_method is not None:
+        tmp = ['disterror']
+        if inverse_disterror:
+            tmp.append('inverse')
+        if nrmse_method is not None:
+            tmp.append(f'nrmse-{nrmse_method}')
+        elif root_mse:
+            tmp.append('rmse')
+        subdir.append('_'.join(tmp))
+    if len(subdir) != 0:
+        output_dir = os.path.join(output_dir, '.'.join(subdir))
+    os.makedirs(output_dir, exist_ok=True)
+    return output_dir
+
+
 def process_data(input_file, chosen_loci_file, max_nchrom_gt2trace=0, min_nonmissing_per_locus=0.1, trace_min_nloci=3,
                  trace_min_nloci_ratio=0.1, by_chosen_loci_only=True, ntraces_per_cell=None, enforce_even_spacing=True,
                  interpolate=False, compare_to_labeled_loci_with_2_traces=False, compare_to_2traces_per_cell=False,
-                 compare_to_minimal_cells=False, compared_loci_cutoff=None, spacing=2.5, chrom_to_filter=None,
-                 output_dir=None, verbose=True):
+                 compare_to_minimal_cells=False, compared_loci_cutoff=None, inverse_disterror=False, nrmse_method=None,
+                 root_mse=False, spacing=2.5, chrom_to_filter=None, output_dir=None, verbose=True):
     if output_dir is not None:
-        subdir = []
-        if ntraces_per_cell is not None:
-            subdir.append(f'ntraces_chrom-cell_{ntraces_per_cell}')
-        if compare_to_labeled_loci_with_2_traces:
-            subdir.append('compare_to_2traces_per_locus')
-        elif compare_to_2traces_per_cell and ntraces_per_cell is None:
-            subdir.append('compare_to_2traces_per_chrom-cell')
-        if compared_loci_cutoff is not None and compared_loci_cutoff > 0:
-            subdir.append(f'compared_loci_{compared_loci_cutoff * 100:d}p')
-        if compare_to_minimal_cells:
-            subdir.append('compare_to_minimal_cells')
-        if interpolate:
-            subdir.append(f'interp')
-        if len(subdir) != 0:
-            output_dir = os.path.join(output_dir, '.'.join(subdir))
+        output_dir = get_full_outdir(
+            output_dir, ntraces_per_cell=ntraces_per_cell,
+            compare_to_labeled_loci_with_2_traces=compare_to_labeled_loci_with_2_traces,
+            compare_to_2traces_per_cell=compare_to_2traces_per_cell, compared_loci_cutoff=compared_loci_cutoff,
+            compare_to_minimal_cells=compare_to_minimal_cells, interpolate=interpolate, inverse_disterror=inverse_disterror,
+            nrmse_method=nrmse_method, root_mse=root_mse)
         output_file = os.path.join(
             output_dir, re.sub(r'\.csv$', '', os.path.basename(input_file)) + '.filter.hmlg.csv')
         print(output_file, flush=True)
-        os.makedirs(output_dir, exist_ok=True)
 
     # ==== Load & filter data
     df = preprocess_data(
@@ -509,14 +590,22 @@ def process_data(input_file, chosen_loci_file, max_nchrom_gt2trace=0, min_nonmis
             print(f"\t...compare ONLY to the most commonly detected loci - detection in top {compared_loci_cutoff * 100:d} percentile", flush=True)
         if compare_to_minimal_cells:
             print("\t...compare to minimal set of previously labeled cells in which all loci are represented", flush=True)
+        if inverse_disterror:
+            print("\t...comparing INVERSE distances for similarity score", flush=True)
+        if nrmse_method is not None:
+            print(f"...using NRMSE with denominator={nrmse_method}", flush=True)
+        elif root_mse:
+            print("...using RMSE (not MSE)", flush=True)
+            
     df['hmlg'] = None
-    df.sort_values(['chrom', 'cell_id', 'chrom_order'], inplace=True)
+    df.sort_values(['chrom', 'cell_id', 'trace_id', 'chrom_order'], inplace=True)
     for chrom in chrom_to_filter:
         df = label_homologs_for_chrom(
             df, df_cell_desc=df_cell_desc, chrom=chrom,
             compare_to_labeled_loci_with_2_traces=compare_to_labeled_loci_with_2_traces,
             compare_to_2traces_per_cell=compare_to_2traces_per_cell, compare_to_minimal_cells=compare_to_minimal_cells,
-            compared_loci_cutoff=compared_loci_cutoff, verbose=verbose)
+            compared_loci_cutoff=compared_loci_cutoff, inverse_disterror=inverse_disterror, nrmse_method=nrmse_method,
+            root_mse=root_mse, verbose=verbose)
 
     # ==== Only keep 'chosen' loci (eg those spaced 2.5Mb apart across the genome)
     df = df[df.chosen_loci].drop('chosen_loci', axis=1)
@@ -558,6 +647,9 @@ def main():
     parser.add_argument('--compare_to_2traces_per_cell', default=False, action='store_true')
     parser.add_argument('--compare_to_minimal_cells', default=False, action='store_true')
     parser.add_argument('--compared_loci_cutoff', type=float)
+    parser.add_argument('--inverse_disterror', default=False, action='store_true')
+    parser.add_argument("--nrmse_method", type=str)
+    parser.add_argument('--root_mse', default=False, action='store_true')
     parser.add_argument("--spacing", default=2.5, type=float)    
     parser.add_argument("--chrom", type=str, nargs='+')
     parser.add_argument('--verbose', default=False, action='store_true')
@@ -574,7 +666,8 @@ def main():
         ntraces_per_cell=args.ntraces_per_cell, enforce_even_spacing=args.enforce_even_spacing,
         interpolate=args.interpolate, compare_to_labeled_loci_with_2_traces=args.compare_to_labeled_loci_with_2_traces,
         compare_to_2traces_per_cell=args.compare_to_2traces_per_cell, compare_to_minimal_cells=args.compare_to_minimal_cells,
-        compared_loci_cutoff=args.compared_loci_cutoff, chrom_to_filter=args.chrom, spacing=args.spacing,
+        compared_loci_cutoff=args.compared_loci_cutoff, inverse_disterror=args.inverse_disterror,
+        nrmse_method=args.nrmse_method, root_mse=args.root_mse, chrom_to_filter=args.chrom, spacing=args.spacing,
         output_dir=output_dir, verbose=args.verbose)
 
 
