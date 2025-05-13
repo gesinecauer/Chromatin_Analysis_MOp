@@ -271,8 +271,6 @@ def label_homologs_for_chrom(df, df_cell_desc, chrom, compare_to_labeled_loci_wi
         nrmse_method = nrmse_method.lower()
         if nrmse_method not in ('mean', 'range', 'iqr'):
             raise ValueError(f"{nrmse_method=}, must be 'mean', 'range' 'iqr', or None.")
-        if nrmse_method != 'mean':
-            raise NotImplementedError
     
     cells = df_cell_desc.loc[df_cell_desc.chrom == chrom, ['cell_id', 'ntraces_in_cell']].set_index(
         'cell_id').ntraces_in_cell
@@ -306,17 +304,23 @@ def label_homologs_for_chrom(df, df_cell_desc, chrom, compare_to_labeled_loci_wi
 
     # Get distance matrix mean (across molecules) for each locus pair
     nrmse_denom = None
-    if nrmse_method is not None and nrmse_method.lower() == 'mean':
-        print(f"Setting up for NRMSE (method={nrmse_method})...")
+    if nrmse_method is not None:
+        print(f"Setting up for NRMSE (method={nrmse_method})...", flush=True)
         if compare_to_2traces_per_cell:
             df_tmp = df[df.ntraces_per_cell == 2]
         else:
             df_tmp = df
         nrmse_denom = df_tmp.groupby(['cell_id', 'trace_id']).apply(
             get_distance_matrix, include_groups=False, invert_distances=inverse_disterror).reset_index(
-            [0, 1, 2], drop=True).groupby('idx').dis.mean()
+            [0, 1, 2], drop=True).groupby('idx')
+        if nrmse_method == 'mean':
+            nrmse_denom = nrmse_denom.dis.mean()
+        elif nrmse_method == 'iqr':
+            nrmse_denom = nrmse_denom.dis.quantile(0.75) - nrmse_denom.dis.quantile(0.25)
+        else:
+            raise NotImplementedError
         nrmse_denom = nrmse_denom ** 2  # Because will divide by denom before taking sqrt
-        print("\t...Done with setting up for NRMSE!")
+        print("\t...Done with setting up for NRMSE!", flush=True)
         
 
     # Arbitrarily label homologs of the first cell
