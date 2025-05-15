@@ -4,11 +4,11 @@ import os
 from scipy.spatial.distance import pdist, squareform
 from iced.io import write_counts, write_lengths
 from tqdm import tqdm
-from parse_dna_merfish import filter_data_per_hmlg
+from parse_dna_merfish import filter_data_per_hmlg, restrict_to_equal_nmol_per_hmlg
 from process_loci import get_index_of_loci
 
 
-def generate_counts_from_sc_dist(sc_dist_vec, contact_th=500, idx=None, exclude_missing_loci=False):
+def generate_counts_from_sc_dist(sc_dist_vec, contact_th=0.5, idx=None, exclude_missing_loci=False):
     if contact_th > np.nanmax(sc_dist_vec) or contact_th < np.nanmin(sc_dist_vec):
         raise ValueError(f"{contact_th=}μm is not appropriate for sc distances, which range from"
                          f" {np.nanmin(sc_dist_vec):g}μm to {np.nanmax(sc_dist_vec):g}μm")
@@ -33,31 +33,30 @@ def generate_counts_from_sc_dist(sc_dist_vec, contact_th=500, idx=None, exclude_
     return mean_counts_matrix, nonmissing_per_locus_pair
 
 
-def process_sc_distances(sc_dna_coords, idx, outdir, contact_th=500, name=None, redo=False):
-    outdir_matrix2d = os.path.join(outdir, 'matrix2d')
-    os.makedirs(outdir_matrix2d, exist_ok=True)
+def process_sc_distances(sc_dna_coords, idx, outdir, contact_th=0.5, name=None, redo=False):
+    os.makedirs(outdir, exist_ok=True)
     if name is not None and name != "":
         name = f"{name}."
     n = idx.max() + 1
 
-    sc_dist_vec_file = os.path.join(outdir_matrix2d, f'{name}distances.vector_per_cell.npy')
+    sc_dist_vec_file = os.path.join(outdir, f'{name}distances.vector_per_cell.npy')
     if os.path.exists(sc_dist_vec_file + '.gz') and not os.path.exists(sc_dist_vec_file):
         sc_dist_vec_file = sc_dist_vec_file + '.gz'
-    median_dist_matrix_file = os.path.join(outdir_matrix2d, f'{name}distances.median.npy')
-    mean_dist_matrix_file = os.path.join(outdir_matrix2d, f'{name}distances.mean.npy')
-    # sc_counts_vec_file = os.path.join(outdir_matrix2d, f'{name}counts.vector_per_cell.cutoff{contact_th:g}.npy')
-    mean_counts_matrix_file = os.path.join(outdir_matrix2d, f'{name}counts.mean.cutoff{contact_th:g}.npy')
-    nonmissing_per_locus_pair_file = os.path.join(outdir_matrix2d, f'{name}num_nonmissing.npy')
+    median_dist_matrix_file = os.path.join(outdir, f'{name}distances.median.npy')
+    mean_dist_matrix_file = os.path.join(outdir, f'{name}distances.mean.npy')
+    # sc_counts_vec_file = os.path.join(outdir, f'{name}counts.vector_per_cell.cutoff{contact_th:g}.npy')
+    mean_counts_matrix_file = os.path.join(outdir, f'{name}counts.mean.cutoff{contact_th:g}.npy')
+    nonmissing_per_locus_pair_file = os.path.join(outdir, f'{name}num_nonmissing.npy')
 
     print(f"Counts: {mean_counts_matrix_file}", flush=True)
     
     all_files = [sc_dist_vec_file, median_dist_matrix_file, mean_dist_matrix_file, mean_counts_matrix_file,
                 nonmissing_per_locus_pair_file]
     missing_files = [os.path.basename(f) for f in all_files if not os.path.exists(f)]
-    if (not redo) and len(missing_files) > 0:
+    if (not redo) and len(missing_files) == 0:
         return {'counts': np.load(mean_counts_matrix_file), 'dis_mean': np.load(mean_dist_matrix_file),
                 'dis_median': np.load(median_dist_matrix_file), 'nonmissing': np.load(nonmissing_per_locus_pair_file)}
-    print(f"Creating files in {outdir_matrix2d}:\n\t- " + '\n\t- '.join(missing_files), flush=True)
+    print(f"Creating files in {outdir}:\n\t- " + '\n\t- '.join(missing_files), flush=True)
     
     if isinstance(sc_dna_coords, str):
         print('Loading sc DNA coords...', flush=True)
@@ -120,12 +119,21 @@ def add_missing_loci(df, spacing=2.5):
     return pd.concat([df, df_missing]).reset_index(drop=True)
 
 
-def process_sc_dna_coords(input_file, outdir=None, min_nonmissing_per_phased_locus=0.05, spacing=2.5,
-                          contact_th=500, redo=False, name=None, verbose=False):
+def process_sc_dna_coords(input_file, outdir=None, min_nonmissing_per_phased_locus=0.05, nmol_per_hmlg_ratio=1,
+                          spacing=2.5, contact_th=0.5, redo=False, name=None, verbose=False):
 
     if outdir is None:
         outdir = os.path.dirname(input_file)
-    df = pd.read_csv(input_file)
+    outdir_matrix2d = os.path.join(outdir, 'matrix2d')
+    if nmol_per_hmlg_ratio is None:
+        outdir_matrix2d += '.nmol_per_hmlg_unrestricted'
+    elif nmol_per_hmlg_ratio != 1:
+        outdir_matrix2d += f'.nmol_per_hmlg_within_{nmol_per_hmlg_ratio * 100:.3g}p'
+    if min_nonmissing_per_phased_locus != 0.05:
+        outdir_matrix2d += f'.min_nonmissing_per_phased_locus_{min_nonmissing_per_phased_locus * 100:.3g}p'
+
+    # Load data, restrict each chromosome to have an equal (or roughly equal) number of molecules per homolog
+    df = restrict_to_equal_nmol_per_hmlg(input_file, cutoff_ratio=nmol_per_hmlg_ratio, verbose=verbose)
 
     # Remove loci where <[cutoff]% of cells are non-missing from one or more of the traces
     df, cov_per_locus = filter_data_per_hmlg(df, min_nonmissing_per_phased_locus=min_nonmissing_per_phased_locus, verbose=verbose)
@@ -161,7 +169,7 @@ def process_sc_dna_coords(input_file, outdir=None, min_nonmissing_per_phased_loc
     df = df[['hmlg', 'chrom', 'idx_chrom', 'idx_genome', 'x', 'y', 'z']]
     sc_dna_coords = np.stack([df[[c]].unstack(level=0).values for c in ['x', 'y', 'z']], axis=2)
 
-    matrices = process_sc_distances(sc_dna_coords, idx=idx, outdir=outdir, contact_th=contact_th, redo=redo, name=name)
+    matrices = process_sc_distances(sc_dna_coords, idx=idx, outdir=outdir_matrix2d, contact_th=contact_th, redo=redo, name=name)
 
     return matrices, lengths_df
 
@@ -173,9 +181,10 @@ def main():
     parser.add_argument("data", type=str)
     parser.add_argument("--spacing", default=2.5, type=float)
     parser.add_argument("--min_nonmissing_per_phased_locus", default=0.05, type=float)
+    parser.add_argument("--nmol_per_hmlg_ratio", default=1, type=float)
     parser.add_argument("--outdir", type=str)
     parser.add_argument("--name", type=str)
-    parser.add_argument("--contact_th", default=500, type=float)
+    parser.add_argument("--contact_th", default=0.5, type=float)
     # parser.add_argument("--chrom", type=str, nargs='+')
     parser.add_argument('--verbose', default=True, action='store_true')
     parser.add_argument('--silent', dest='verbose', default=True, action='store_false')
@@ -187,9 +196,14 @@ def main():
         if name.startswith('ntraces_chrom-cell_'):
             name = os.path.basename(os.path.dirname(os.path.dirname(args.data)))
 
+    nmol_per_hmlg_ratio = args.nmol_per_hmlg_ratio
+    if args.nmol_per_hmlg_ratio >= 1000:
+        nmol_per_hmlg_ratio = None
+
     process_sc_dna_coords(
         input_file=args.data, min_nonmissing_per_phased_locus=args.min_nonmissing_per_phased_locus,
-        spacing=args.spacing, outdir=args.outdir, name=name, contact_th=args.contact_th, verbose=args.verbose)
+        nmol_per_hmlg_ratio=nmol_per_hmlg_ratio, spacing=args.spacing, outdir=args.outdir, name=name,
+        contact_th=args.contact_th, verbose=args.verbose)
 
 
 if __name__ == "__main__":

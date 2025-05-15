@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 from scipy.spatial.distance import pdist
 from tqdm import tqdm
-from process_loci import get_evenly_spaced_loci #get_index_of_loci
+from process_loci import get_evenly_spaced_loci
 from interpolate import interp_all
 
 
@@ -56,11 +56,11 @@ def filter_data_per_hmlg(df, min_nonmissing_per_phased_locus=None, verbose=True)
                 tmp = f" (={((~cov_per_locus.pass_cutoff) & cov_per_locus.chosen_loci).sum()}/{cov_per_locus.chosen_loci.sum()} chosen loci)"
             else:
                 tmp = ""
-            print((f"\tRemoved {(~cov_per_locus.pass_cutoff).sum()}/{len(cov_per_locus)} LOCI{tmp}"
+            print((f"Removed {(~cov_per_locus.pass_cutoff).sum()}/{len(cov_per_locus)} LOCI{tmp}"
                    f" where one or both homologs were detected in <{min_nonmissing_per_phased_locus * 100:g}% of cells"), flush=True)
-            print(f"\t ↳ Current n={len(df):,}, {len(df) / nrows_orig * 100:.3g}% of original", flush=True)
-            print('\t   ' + cov_per_locus[cov_per_locus.pass_cutoff].describe().drop('count').to_string().replace(
-                '\n', '\n\t   '), flush=True)
+            print(f" ↳ Current n={len(df):,}, {len(df) / nrows_orig * 100:.3g}% of original", flush=True)
+            print('   ' + cov_per_locus[cov_per_locus.pass_cutoff].describe().drop('count').to_string().replace(
+                '\n', '\n   '), flush=True)
     else:
         print("\tRatio of cells in which each locus was detected:", flush=True)
         print('\t   ' + cov_per_locus.describe().drop('count').to_string().replace('\n', '\n\t   '), flush=True)
@@ -311,7 +311,7 @@ def label_homologs_for_chrom(df, df_cell_desc, chrom, compare_to_labeled_loci_wi
     # Get distance matrix mean (across molecules) for each locus pair
     nrmse_denom = None
     if nrmse_method is not None:
-        print(f"Setting up for NRMSE (method={nrmse_method})...", flush=True)
+        print(f"\tSetting up for NRMSE (method={nrmse_method})...", flush=True)
         if compare_to_2traces_per_cell:
             df_tmp = df[df.ntraces_per_cell == 2]
         else:
@@ -326,7 +326,7 @@ def label_homologs_for_chrom(df, df_cell_desc, chrom, compare_to_labeled_loci_wi
         else:
             raise NotImplementedError
         nrmse_denom = nrmse_denom ** 2  # Because will divide by denom before taking sqrt
-        print("\t...Done with setting up for NRMSE!", flush=True)
+        print("\t\t...Done with setting up for NRMSE!", flush=True)
 
     # Arbitrarily label homologs of the first cell
     first_cell = cells.index[0]
@@ -334,7 +334,7 @@ def label_homologs_for_chrom(df, df_cell_desc, chrom, compare_to_labeled_loci_wi
     mask = (df.chrom == chrom) & (df.cell_id == first_cell)
     df.loc[mask, 'hmlg'] = df.loc[mask, 'trace_id']
 
-    
+    pass_hmlg_err_ratio_cutoff = ncells_eligible = 0
     for cell_id, ntraces_per_cell in tqdm(cells.to_dict().items()):
         if cell_id == first_cell:  # First cell has already been labeled
             df_chrom = df[chrom_loci_to_compare]  # Initial selection of data for chrom
@@ -399,10 +399,18 @@ def label_homologs_for_chrom(df, df_cell_desc, chrom, compare_to_labeled_loci_wi
             df.loc[mask, 'hmlg'] = df.loc[mask, 'trace_id']
         else:
             df.loc[mask, 'hmlg'] = 3 - df.loc[mask, 'trace_id']
-        df.loc[mask, 'hmlg_err_ratio'] = min(resA, resB) / max(resA, resB)
+        hmlg_err_ratio = min(resA, resB) / max(resA, resB)
+        df.loc[mask, 'hmlg_err_ratio'] = hmlg_err_ratio
 
+        # TODO
+        if ntraces_per_prev_cell == 2 or not (compare_to_labeled_loci_with_2_traces or compare_to_2traces_per_cell):
+            if hmlg_err_ratio_cutoff is not None and hmlg_err_ratio_cutoff < 1:
+                if hmlg_err_ratio <= hmlg_err_ratio_cutoff:
+                    pass_hmlg_err_ratio_cutoff += 1
+                ncells_eligible += 1
+        
         # median_hmlg_err_ratio = df_chrom.loc[~df_chrom.hmlg.isnull(), ['cell_id', 'hmlg', 'hmlg_err_ratio']].drop_duplicates().hmlg_err_ratio.median()
-        # print(f"current={min(resA, resB) / max(resA, resB) * 100:.3g}\tmedian={median_hmlg_err_ratio * 100:.3g}", flush=True)
+        # print(f"{('✓' if hmlg_err_ratio <= hmlg_err_ratio_cutoff else ' ')}\tcurrent={hmlg_err_ratio * 100:.3g}\tmedian={median_hmlg_err_ratio * 100:.3g}", flush=True) # ✗
 
         # Keep track of this cell's ntraces_per_cell when analyzing the next cell
         ntraces_per_prev_cell = ntraces_per_cell
@@ -410,6 +418,8 @@ def label_homologs_for_chrom(df, df_cell_desc, chrom, compare_to_labeled_loci_wi
     # Assess labeling results
     if verbose:
         nmol_labeled = summarize_labeling(df, prefix='\t')
+        if hmlg_err_ratio_cutoff is not None and hmlg_err_ratio_cutoff < 1:
+            print(f"\n\t{round(pass_hmlg_err_ratio_cutoff / ncells_eligible * 100)}% of cells pass hmlg_err_ratio cutoff ({pass_hmlg_err_ratio_cutoff}/{ncells_eligible})", flush=True)
 
     return df
 
@@ -465,12 +475,22 @@ def preprocess_data(input_file, chosen_loci_file, max_nchrom_gt2trace=0, min_non
     return df
 
 
-def restrict_to_equal_nmol_per_hmlg(df, cell_desc_file, cutoff_ratio=1, verbose=True):
-    nrows_orig = len(df)
-
+def restrict_to_equal_nmol_per_hmlg(data, cell_desc_file=None, cutoff_ratio=1, verbose=True):
     if verbose:
         print("Filtering data for each chromosome such that the number of cells in each homolog are"
               f" within {cutoff_ratio:.3g}x of each other", flush=True)
+
+    if isinstance(data, str):
+        df = pd.read_csv(data)
+        if cell_desc_file is None:
+            cell_desc_file = os.path.join(os.path.dirname(data), 'cell_data_for_hmlg_labeling.csv')
+    else:
+        df = data
+        if cell_desc_file is None:
+            raise ValueError("Must input cell_desc_file.")
+    if cutoff_ratio is None:
+        return df
+    nrows_orig = len(df)
 
     # For each chromosome, order cells by how much data they have
     df_cell_desc = pd.read_csv(cell_desc_file).sort_values(
@@ -488,7 +508,7 @@ def restrict_to_equal_nmol_per_hmlg(df, cell_desc_file, cutoff_ratio=1, verbose=
     df = df[df.labeling_order <= df.min_nmol * cutoff_ratio]
 
     if verbose:
-        print(f"\t ↳ Current n={len(df):,}, {len(df) / nrows_orig * 100:.3g}% of original", flush=True)
+        print(f" ↳ Current n={len(df):,}, {len(df) / nrows_orig * 100:.3g}% of original", flush=True)
 
     df.drop(['labeling_order', 'min_nmol'], axis=1, inplace=True)
     return df
@@ -501,9 +521,11 @@ def get_full_outdir(output_dir, ntraces_per_cell=None, compare_to_labeled_loci_w
     subdir = []
     if ntraces_per_cell is not None:
         subdir.append(f'ntraces_chrom-cell_{ntraces_per_cell}')
+    if hmlg_err_ratio_cutoff == 0:
+        subdir.append('compare_to_1cell')
     if compare_to_labeled_loci_with_2_traces:
         subdir.append('compare_to_2traces_per_locus')
-    elif compare_to_2traces_per_cell and ntraces_per_cell is None:
+    elif compare_to_2traces_per_cell and ntraces_per_cell is None and hmlg_err_ratio_cutoff != 0:
         subdir.append('compare_to_2traces_per_chrom-cell')
     if compared_loci_cutoff is not None and compared_loci_cutoff > 0:
         subdir.append(f'compared_loci_{compared_loci_cutoff * 100:.4g}p')
@@ -520,7 +542,7 @@ def get_full_outdir(output_dir, ntraces_per_cell=None, compare_to_labeled_loci_w
         elif root_mse:
             tmp.append('rmse')
         subdir.append('_'.join(tmp))
-    if hmlg_err_ratio_cutoff is not None and hmlg_err_ratio_cutoff < 1:
+    if hmlg_err_ratio_cutoff is not None and hmlg_err_ratio_cutoff < 1 and hmlg_err_ratio_cutoff > 0:
         subdir.append(f'hmlg_err_ratio_{hmlg_err_ratio_cutoff * 100:.4g}p')
     if len(subdir) != 0:
         output_dir = os.path.join(output_dir, '.'.join(subdir))
