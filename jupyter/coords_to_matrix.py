@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 import os
+import re
 from scipy.spatial.distance import pdist, squareform
 from iced.io import write_counts, write_lengths
 from tqdm import tqdm
@@ -192,9 +193,7 @@ def main():
 
     name = args.name
     if name is None:
-        name = os.path.basename(os.path.dirname(args.data))
-        if name.startswith('ntraces_chrom-cell_'):
-            name = os.path.basename(os.path.dirname(os.path.dirname(args.data)))
+        name = re.sub(r'(^|.*/)cluster/([^/]+)(/.*|$)', r'\2', os.path.dirname(args.data))
 
     nmol_per_hmlg_ratio = args.nmol_per_hmlg_ratio
     if args.nmol_per_hmlg_ratio >= 1000:
