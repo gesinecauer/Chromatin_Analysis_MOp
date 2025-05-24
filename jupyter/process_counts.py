@@ -36,9 +36,6 @@ def get_unambig_counts(lengths_df, counts, matrices, nreads, outdir_counts=None)
     if outdir_counts is not None:
         write_counts(os.path.join(outdir_counts, "ua_counts.matrix"), counts_int)
 
-    # Get beta such that distance between neighbor beads is 1
-    beta_ua = get_beta_ua(counts=counts_int, lengths=lengths_s.values)
-
     # Distances, scaled such that mean distance between neighbor beads is 1
     dis_scaled = {}
     mask_intermol_nghbr = np.tile(lengths_s.values, 2).cumsum()[:-1] - 1
@@ -49,11 +46,14 @@ def get_unambig_counts(lengths_df, counts, matrices, nreads, outdir_counts=None)
         if outdir_counts is not None:
             np.save(os.path.join(outdir_counts, f"distances_scaled.{agg_func}.npy"), dis_scaled[agg_func])
 
+    # Get beta such that distance between neighbor beads is 1
+    est_beta_ua = get_beta_ua(counts=counts_int, lengths=lengths_s.values)
+
     # Metadata
     if outdir_counts is not None:
         dataset_info = pd.Series({
             'ploidy': 2, 'nreads': counts_int.sum(), 'ua': 1, 'pa': 0, 'lengths': lengths_s.values,
-            'beta': beta_ua, 'beta_ua': beta_ua})  # alpha, seed
+            'beta': None, 'beta_ua': None, 'alpha': None})  # alpha, seed
         dataset_info.to_csv(os.path.join(outdir_counts, "dataset_info.txt"), sep="\t")
     
     return counts_int, dis_scaled, lengths_s.values
