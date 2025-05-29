@@ -125,13 +125,15 @@ def process_sc_dna_coords(input_file, outdir=None, min_nonmissing_per_phased_loc
 
     if outdir is None:
         outdir = os.path.dirname(input_file)
-    outdir_matrix2d = os.path.join(outdir, 'matrix2d')
+    output_note = ''
     if nmol_per_hmlg_ratio is None:
-        outdir_matrix2d += '.nmol_per_hmlg_unrestricted'
+        output_note += '.nmol_per_hmlg_unrestricted'
     elif nmol_per_hmlg_ratio != 1:
-        outdir_matrix2d += f'.nmol_per_hmlg_within_{nmol_per_hmlg_ratio * 100:.3g}p'
+        output_note += f'.nmol_per_hmlg_within_{nmol_per_hmlg_ratio * 100:.3g}p'
     if min_nonmissing_per_phased_locus != 0.05:
-        outdir_matrix2d += f'.min_nonmissing_per_phased_locus_{min_nonmissing_per_phased_locus * 100:.3g}p'
+        output_note += f'.min_nonmissing_per_phased_locus_{min_nonmissing_per_phased_locus * 100:.3g}p'
+    outdir_matrix2d = os.path.join(outdir, f'matrix2d{output_note}')
+    outfile_df = os.path.join(outdir, re.sub(r'\.csv(\.gz)*$', '', os.path.basename(input_file)) + f'.processed{output_note}.csv')
 
     # Load data, restrict each chromosome to have an equal (or roughly equal) number of molecules per homolog
     df = restrict_to_equal_nmol_per_hmlg(input_file, cutoff_ratio=nmol_per_hmlg_ratio, verbose=verbose)
@@ -165,6 +167,7 @@ def process_sc_dna_coords(input_file, outdir=None, min_nonmissing_per_phased_loc
     
     # Get 3D coordinates for each cell (shape = ncells, nloci, ndim)
     df.sort_values(['idx', 'cell_id'], inplace=True)
+    df.to_csv(outfile_df, index=False)
     idx = df.idx.drop_duplicates().sort_values().values
     df.set_index(['idx', 'cell_id'], inplace=True)
     df = df[['hmlg', 'chrom', 'idx_chrom', 'idx_genome', 'x', 'y', 'z']]
