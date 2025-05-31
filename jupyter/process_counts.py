@@ -48,7 +48,8 @@ def get_unambig_counts(lengths_df, counts, matrices, nreads, outdir_counts=None)
         nghbr_dis = np.diagonal(matrices[f'dis_{agg_func}'], offset=1).copy()
         nghbr_dis[mask_intermol_nghbr] = np.nan
         nghbr_dis_mean = np.nanmean(nghbr_dis)
-        scale_factors[agg_func] = nghbr_dis_mean
+        scale_factors[f"nghbr_dis_mean.sc_{agg_func}"] = nghbr_dis_mean
+        scale_factors[f"nghbr_dis_med.sc_{agg_func}"] = np.nanmedian(nghbr_dis)
         dis_scaled[agg_func] = matrices[f'dis_{agg_func}'] / nghbr_dis_mean
         if outdir_counts is not None:
             np.save(os.path.join(outdir_counts, f"distances_true.{agg_func}.npy"), dis_scaled[agg_func])
@@ -61,13 +62,12 @@ def get_unambig_counts(lengths_df, counts, matrices, nreads, outdir_counts=None)
         dataset_info = pd.Series({
             'ploidy': 2, 'nreads': counts_int.sum(), 'ua': 1, 'pa': 0, 'lengths': lengths_s.values,
             'beta': None, 'beta_ua': None, 'alpha': None})
-        for agg_func in ['mean', 'median']:
-            dataset_info[f"nghbr_dis_mean.{agg_func}"] = scale_factors[agg_func]
+        for key, value in scale_factors.items():
+            dataset_info[key] = value
         dataset_info.to_csv(os.path.join(outdir_counts, "dataset_info.txt"), sep="\t", header=False)
 
     # Plot counts & distances
     if outdir_counts is not None:
-        outdir
         plot_counts_single(
             counts_int, lengths=lengths, title="Pseudo-counts, unambiguous",
             outfile=os.path.join(outdir_counts, "images", "ua_counts.png"), mark_excluded=True)

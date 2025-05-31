@@ -34,7 +34,33 @@ def generate_counts_from_sc_dist(sc_dist_vec, contact_th=0.5, idx=None, exclude_
     return mean_counts_matrix, nonmissing_per_locus_pair
 
 
-def process_sc_distances(sc_dna_coords, idx, outdir, contact_th=0.5, name=None, redo=False):
+def save_sc_distance_data(sc_dist_vec, idx, outfile, lengths_df):
+    _, where_idx_nan = np.where(~np.isnan(sc_dist_vec))
+
+    row, col = np.triu_indices(idx.size, 1)
+    row = idx[row][where_idx_nan]
+    col = idx[col][where_idx_nan]
+    # matrix_idx = list(map(tuple, np.stack([row, col], axis=1)))
+    # matrix_idx = [(int(row[i]), int(col[i])) for i in range(row.size)]
+    matrix_idx = list(map(tuple, np.stack([row, col], axis=1).tolist()))
+
+    df = pd.DataFrame(data={'dis': sc_dist_vec[~np.isnan(sc_dist_vec)]}, index=matrix_idx)
+    # df.to_csv(outfile, header=False)
+
+    df = df.groupby('idx').apply(
+        lambda x: x.dis.values.tolist(), include_groups=False).reset_index(level=0).rename(
+        {0: 'dis'}, axis=1)
+
+    matrix_df = make_matrix_df(lengths_df)
+    sameM = (~matrix_df[['mask.diffM']]).rename({'mask.diffM': 'same_molecule'}, axis=1).astype(int)
+    
+    df = df.join(sameM).reset_index().sort_values(['same_molecule', 'idx'], ascending=[False, True])
+    df = df[['idx', 'same_molecule', 'dis']]
+    
+    df.to_csv(outfile, index=False, header=False, sep='\t')
+
+
+def process_sc_distances(sc_dna_coords, idx, outdir, lengths_df, contact_th=0.5, name=None, redo=False):
     os.makedirs(outdir, exist_ok=True)
     if name is not None and name != "":
         name = f"{name}."
@@ -48,11 +74,12 @@ def process_sc_distances(sc_dna_coords, idx, outdir, contact_th=0.5, name=None, 
     # sc_counts_vec_file = os.path.join(outdir, f'{name}counts.vector_per_cell.cutoff{contact_th:g}.npy')
     mean_counts_matrix_file = os.path.join(outdir, f'{name}counts.mean.cutoff{contact_th:g}.npy')
     nonmissing_per_locus_pair_file = os.path.join(outdir, f'{name}num_nonmissing.npy')
+    sc_dist_per_locus_file = os.path.join(outdir, f'{name}distances.per_locus.csv')
 
     print(f"Counts: {mean_counts_matrix_file}", flush=True)
     
     all_files = [sc_dist_vec_file, median_dist_matrix_file, mean_dist_matrix_file, mean_counts_matrix_file,
-                nonmissing_per_locus_pair_file]
+                nonmissing_per_locus_pair_file, sc_dist_per_locus_file]
     missing_files = [os.path.basename(f) for f in all_files if not os.path.exists(f)]
     if (not redo) and len(missing_files) == 0:
         return {'counts': np.load(mean_counts_matrix_file), 'dis_mean': np.load(mean_dist_matrix_file),
@@ -86,7 +113,6 @@ def process_sc_distances(sc_dna_coords, idx, outdir, contact_th=0.5, name=None, 
         mean_dist_matrix = np.load(mean_dist_matrix_file)
 
     # Check appropriateness of contact threshold
-    print(contact_th, np.nanmax(sc_dist_vec), np.nanmean(sc_dist_vec), np.nanmin(sc_dist_vec))
     if contact_th > np.nanmax(sc_dist_vec) or contact_th < np.nanmin(sc_dist_vec):
         raise ValueError(f"{contact_th=}μm is not appropriate for sc distances, which range from"
                          f" {np.nanmin(sc_dist_vec):g}μm to {np.nanmax(sc_dist_vec):g}μm")
@@ -102,6 +128,11 @@ def process_sc_distances(sc_dna_coords, idx, outdir, contact_th=0.5, name=None, 
             np.save(nonmissing_per_locus_pair_file, nonmissing_per_locus_pair)
     else:
         mean_counts_matrix = np.load(mean_counts_matrix_file)
+        nonmissing_per_locus_pair = np.load(nonmissing_per_locus_pair_file)
+
+    if redo or not os.path.exists(sc_dist_per_locus_file):
+        print('Saving single-cell distances per locus...', flush=True)
+        save_sc_distance_data(sc_dist_vec, idx=idx, outfile=sc_dist_per_locus_file, lengths_df=lengths_df)
 
     print('Done!', flush=True)
     return {'counts': mean_counts_matrix, 'dis_mean': mean_dist_matrix, 'dis_median': median_dist_matrix, 'nonmissing': nonmissing_per_locus_pair}
@@ -173,7 +204,9 @@ def process_sc_dna_coords(input_file, outdir=None, min_nonmissing_per_phased_loc
     df = df[['hmlg', 'chrom', 'idx_chrom', 'idx_genome', 'x', 'y', 'z']]
     sc_dna_coords = np.stack([df[[c]].unstack(level=0).values for c in ['x', 'y', 'z']], axis=2)
 
-    matrices = process_sc_distances(sc_dna_coords, idx=idx, outdir=outdir_matrix2d, contact_th=contact_th, redo=redo, name=name)
+    matrices = process_sc_distances(
+        sc_dna_coords, idx=idx, outdir=outdir_matrix2d, lengths_df=lengths_df,
+        contact_th=contact_th, redo=redo, name=name)
 
     return matrices, lengths_df
 
