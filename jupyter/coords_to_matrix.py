@@ -55,8 +55,12 @@ def save_sc_distance_data(sc_dist_vec, idx, outfile, lengths_df):
     sameM = (~matrix_df[['mask.diffM']]).rename({'mask.diffM': 'same_molecule'}, axis=1).astype(int)
     
     df = df.join(sameM).reset_index().sort_values(['same_molecule', 'idx'], ascending=[False, True])
-    df = df[['idx', 'same_molecule', 'dis']]
-    
+    # df = df[['idx', 'same_molecule', 'dis']]
+
+    df['dis_mean'] = df.dis.apply(np.mean)
+    df['dis_med'] = df.dis.apply(np.median)
+
+    df = df[['idx', 'same_molecule', 'dis_mean', 'dis_med', 'dis']]
     df.to_csv(outfile, index=False, header=False, sep='\t')
 
 
