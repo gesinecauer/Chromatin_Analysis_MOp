@@ -34,7 +34,22 @@ def generate_counts_from_sc_dist(sc_dist_vec, contact_th=0.5, idx=None, exclude_
     return mean_counts_matrix, nonmissing_per_locus_pair
 
 
-def save_sc_distance_data(sc_dist_vec, idx, outfile, lengths_df):
+def save_sc_dis_intramol(sc_dist_vec, idx, outfile, lengths_df):
+    row, col = np.triu_indices(idx.size, 1)
+    row = idx[row]
+    col = idx[col]
+    matrix_idx = list(map(tuple, np.stack([row, col], axis=1).tolist()))
+    
+    matrix_df = make_matrix_df(lengths_df)
+    matrix_df = matrix_df[matrix_idx]  # Sort/filter to match sc_dist_vec
+    
+    sameM = ~matrix_df['mask.diffM'].values
+    df = pd.DataFrame(data=sc_dist_vec.T[sameM], index=matrix_idx[sameM])
+
+    df.to_csv(outfile, index=True, header=False, sep='\t')
+    
+
+def save_sc_dis_per_locus(sc_dist_vec, idx, outfile, lengths_df):
     _, where_idx_nan = np.where(~np.isnan(sc_dist_vec))
 
     row, col = np.triu_indices(idx.size, 1)
@@ -79,11 +94,12 @@ def process_sc_distances(sc_dna_coords, idx, outdir, lengths_df, contact_th=0.5,
     mean_counts_matrix_file = os.path.join(outdir, f'{name}counts.mean.cutoff{contact_th:g}.npy')
     nonmissing_per_locus_pair_file = os.path.join(outdir, f'{name}num_nonmissing.npy')
     sc_dist_per_locus_file = os.path.join(outdir, f'{name}distances.per_locus.csv')
+    sc_dist_intramol_file = os.path.join(outdir, f'{name}distances.intramol.csv')
 
     print(f"Counts: {mean_counts_matrix_file}", flush=True)
     
     all_files = [sc_dist_vec_file, median_dist_matrix_file, mean_dist_matrix_file, mean_counts_matrix_file,
-                nonmissing_per_locus_pair_file, sc_dist_per_locus_file]
+                nonmissing_per_locus_pair_file, sc_dist_per_locus_file, sc_dist_intramol_file]
     missing_files = [os.path.basename(f) for f in all_files if not os.path.exists(f)]
     if (not redo) and len(missing_files) == 0:
         return {'counts': np.load(mean_counts_matrix_file), 'dis_mean': np.load(mean_dist_matrix_file),
@@ -95,7 +111,7 @@ def process_sc_distances(sc_dna_coords, idx, outdir, lengths_df, contact_th=0.5,
         sc_dna_coords = np.load(sc_dna_coords)
 
     print('Converting sc DNA coords to distance vectors...', flush=True)
-    sc_dist_vec = np.stack([pdist(x) for x in tqdm(sc_dna_coords)])
+    sc_dist_vec = np.stack([pdist(x) for x in tqdm(sc_dna_coords)])  # shape=(ncells, nloci)
     if redo or not os.path.exists(sc_dist_vec_file):
         print('                 ...saving...', flush=True)
         np.save(sc_dist_vec_file, sc_dist_vec)
@@ -136,7 +152,12 @@ def process_sc_distances(sc_dna_coords, idx, outdir, lengths_df, contact_th=0.5,
 
     if redo or not os.path.exists(sc_dist_per_locus_file):
         print('Saving single-cell distances per locus...', flush=True)
-        save_sc_distance_data(sc_dist_vec, idx=idx, outfile=sc_dist_per_locus_file, lengths_df=lengths_df)
+        save_sc_dis_per_locus(sc_dist_vec, idx=idx, outfile=sc_dist_per_locus_file, lengths_df=lengths_df)
+
+    if redo or not os.path.exists(sc_dist_intramol_file):
+        print('Saving intra-molecular single-cell distances...', flush=True)
+        save_sc_dis_intramol(sc_dist_vec, idx=idx, outfile=sc_dist_intramol_file, lengths_df=lengths_df)
+    
 
     print('Done!', flush=True)
     return {'counts': mean_counts_matrix, 'dis_mean': mean_dist_matrix, 'dis_median': median_dist_matrix, 'nonmissing': nonmissing_per_locus_pair}
