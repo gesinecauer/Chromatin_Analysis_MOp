@@ -7,6 +7,7 @@ from iced.io import write_counts, write_lengths
 from tqdm import tqdm
 from parse_dna_merfish import filter_data_per_hmlg, restrict_to_equal_nmol_per_hmlg
 from process_loci import get_index_of_loci
+from topsy.analysis.compare_distances import make_matrix_df
 
 
 def generate_counts_from_sc_dist(sc_dist_vec, contact_th=0.5, idx=None, exclude_missing_loci=False):
@@ -41,10 +42,10 @@ def save_sc_dis_intramol(sc_dist_vec, idx, outfile, lengths_df):
     matrix_idx = list(map(tuple, np.stack([row, col], axis=1).tolist()))
     
     matrix_df = make_matrix_df(lengths_df)
-    matrix_df = matrix_df[matrix_idx]  # Sort/filter to match sc_dist_vec
+    matrix_df = matrix_df.loc[matrix_idx]  # Sort/filter to match sc_dist_vec
     
     sameM = ~matrix_df['mask.diffM'].values
-    df = pd.DataFrame(data=sc_dist_vec.T[sameM], index=matrix_idx[sameM])
+    df = pd.DataFrame(data=sc_dist_vec.T[sameM], index=matrix_df.index[sameM])
 
     df.to_csv(outfile, index=True, header=False, sep='\t')
     
@@ -62,14 +63,15 @@ def save_sc_dis_per_locus(sc_dist_vec, idx, outfile, lengths_df):
     df = pd.DataFrame(data={'dis': sc_dist_vec[~np.isnan(sc_dist_vec)]}, index=matrix_idx)
     # df.to_csv(outfile, header=False)
 
-    df = df.groupby('idx').apply(
+    df = df.groupby(level=0).apply(
         lambda x: x.dis.values.tolist(), include_groups=False).reset_index(level=0).rename(
         {0: 'dis'}, axis=1)
 
     matrix_df = make_matrix_df(lengths_df)
     sameM = (~matrix_df[['mask.diffM']]).rename({'mask.diffM': 'same_molecule'}, axis=1).astype(int)
     
-    df = df.join(sameM).reset_index().sort_values(['same_molecule', 'idx'], ascending=[False, True])
+    df = df.join(sameM).reset_index().rename({'index': 'idx'}, axis=1).sort_values(
+        ['same_molecule', 'idx'], ascending=[False, True])
     # df = df[['idx', 'same_molecule', 'dis']]
 
     df['dis_mean'] = df.dis.apply(np.mean)
@@ -85,16 +87,16 @@ def process_sc_distances(sc_dna_coords, idx, outdir, lengths_df, contact_th=0.5,
         name = f"{name}."
     n = idx.max() + 1
 
-    sc_dist_vec_file = os.path.join(outdir, f'{name}distances.vector_per_cell.npy')
-    if os.path.exists(sc_dist_vec_file + '.gz') and not os.path.exists(sc_dist_vec_file):
-        sc_dist_vec_file = sc_dist_vec_file + '.gz'
+    sc_dist_vec_file = os.path.join(outdir, f'{name}distances.vector_per_cell.npy.gz')
+    # if os.path.exists(sc_dist_vec_file + '.gz') and not os.path.exists(sc_dist_vec_file):
+    #     sc_dist_vec_file = sc_dist_vec_file + '.gz'
     median_dist_matrix_file = os.path.join(outdir, f'{name}distances.median.npy')
     mean_dist_matrix_file = os.path.join(outdir, f'{name}distances.mean.npy')
     # sc_counts_vec_file = os.path.join(outdir, f'{name}counts.vector_per_cell.cutoff{contact_th:g}.npy')
     mean_counts_matrix_file = os.path.join(outdir, f'{name}counts.mean.cutoff{contact_th:g}.npy')
     nonmissing_per_locus_pair_file = os.path.join(outdir, f'{name}num_nonmissing.npy')
-    sc_dist_per_locus_file = os.path.join(outdir, f'{name}distances.per_locus.csv')
-    sc_dist_intramol_file = os.path.join(outdir, f'{name}distances.intramol.csv')
+    sc_dist_per_locus_file = os.path.join(outdir, f'{name}distances.per_locus.csv.gz')
+    sc_dist_intramol_file = os.path.join(outdir, f'{name}distances.intramol.csv.gz')
 
     print(f"Counts: {mean_counts_matrix_file}", flush=True)
     
