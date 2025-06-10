@@ -87,16 +87,16 @@ def process_sc_distances(sc_dna_coords, idx, outdir, lengths_df, contact_th=0.5,
         name = f"{name}."
     n = idx.max() + 1
 
-    sc_dist_vec_file = os.path.join(outdir, f'{name}distances.vector_per_cell.npy.gz')
-    # if os.path.exists(sc_dist_vec_file + '.gz') and not os.path.exists(sc_dist_vec_file):
-    #     sc_dist_vec_file = sc_dist_vec_file + '.gz'
+    sc_dist_vec_file = os.path.join(outdir, f'{name}distances.vector_per_cell.npy')
+    if os.path.exists(sc_dist_vec_file + '.gz') and not os.path.exists(sc_dist_vec_file):
+        sc_dist_vec_file = sc_dist_vec_file + '.gz'
     median_dist_matrix_file = os.path.join(outdir, f'{name}distances.median.npy')
     mean_dist_matrix_file = os.path.join(outdir, f'{name}distances.mean.npy')
     # sc_counts_vec_file = os.path.join(outdir, f'{name}counts.vector_per_cell.cutoff{contact_th:g}.npy')
     mean_counts_matrix_file = os.path.join(outdir, f'{name}counts.mean.cutoff{contact_th:g}.npy')
     nonmissing_per_locus_pair_file = os.path.join(outdir, f'{name}num_nonmissing.npy')
-    sc_dist_per_locus_file = os.path.join(outdir, f'{name}distances.per_locus.csv.gz')
-    sc_dist_intramol_file = os.path.join(outdir, f'{name}distances.intramol.csv.gz')
+    sc_dist_per_locus_file = os.path.join(outdir, f'{name}distances.per_locus.tsv.gz')
+    sc_dist_intramol_file = os.path.join(outdir, f'{name}distances.intramol.tsv.gz')
 
     print(f"Counts: {mean_counts_matrix_file}", flush=True)
     
@@ -150,7 +150,7 @@ def process_sc_distances(sc_dna_coords, idx, outdir, lengths_df, contact_th=0.5,
             np.save(nonmissing_per_locus_pair_file, nonmissing_per_locus_pair)
     else:
         mean_counts_matrix = np.load(mean_counts_matrix_file)
-        nonmissing_per_locus_pair = np.load(nonmissing_per_locus_pair_file)
+        nonmissing_per_locus_pair = np.load(nonmissing_per_locus_pair_file).astype(int)
 
     if redo or not os.path.exists(sc_dist_per_locus_file):
         print('Saving single-cell distances per locus...', flush=True)
@@ -235,7 +235,7 @@ def process_sc_dna_coords(input_file, outdir=None, min_nonmissing_per_phased_loc
         sc_dna_coords, idx=idx, outdir=outdir_matrix2d, lengths_df=lengths_df,
         contact_th=contact_th, redo=redo, name=name)
 
-    return matrices, lengths_df
+    return matrices, lengths_df, outdir_matrix2d
 
 
 def main():
