@@ -12,6 +12,106 @@ from topsy.plot.plot_counts import plot_counts_single
 from topsy.analysis.compare_distances import make_matrix_df, get_other_struct_features
 from topsy.analysis.compare_distances import load_sc_dis_per_locus, scale_sc_distances
 from topsy.analysis.utils import get_nghbr_dis_var
+from estimate_alpha import estimate_alphas_from_true_dis
+
+
+def prep_matrix_df(lengths_df, matrices, scale_dis_by='mean', nonmissing_bin_percentile=None):
+    if set(list(matrices.keys())) != {'counts', 'nonmissing', 'dis_mean', 'dis_median'}:
+        raise ValueError("Inputted matrices must contain: 'counts', 'nonmissing', 'dis_mean', 'dis_median'")
+    
+    if scale_dis_by is not None:
+        scale_dis_by = scale_dis_by.lower()
+        if scale_dis_by not in ('mean', 'median'):
+            raise ValueError("'scale_dis_by' must be 'mean', 'median', or None.")
+
+    matrix_df = make_matrix_df(lengths_df=lengths_df, matrix_dict=matrices)
+    matrix_df['nonmissing'] = matrix_df['nonmissing'].astype(int)
+
+    matrix_df['genomic_dis'] = None
+    matrix_df.loc[matrix_df['mask.sameC-sameH'], 'genomic_dis'] = (matrix_df['i.idx'] - matrix_df['j.idx']).abs()
+    matrix_df['mask.nghbr'] = matrix_df['mask.sameC-sameH'] & (matrix_df.genomic_dis == 1)
+
+    # Remove loci that are entirely missing in sc dataset
+    n = len(lengths_df)  # n = nbeads / ploidy
+    excluded_loci = np.where((matrices['nonmissing'] == 0).all(axis=0))[0]
+    excluded_loci[excluded_loci >= n] -= n
+    excluded_loci = np.unique(excluded_loci)  # If excluded in one hmlg, exclude in both
+    mask = (~matrix_df['i.idx_ambig'].isin(excluded_loci)) & (~matrix_df['j.idx_ambig'].isin(excluded_loci))
+    matrix_df = matrix_df[mask]
+
+    # Scale distances by distance between neighboring beads (along a molecule)
+    if scale_dis_by is None:
+        dist_scale_factor = 1
+    else:
+        if scale_dis_by == 'mean':
+            # dist_scale_factors['mean'] = matrix_df.loc[matrix_df['mask.nghbr'], 'dis_mean'].mean()
+            dist_scale_factor = matrix_df.loc[matrix_df['mask.nghbr'], 'dis_median'].mean()
+        elif scale_dis_by == 'median':
+            # dist_scale_factors['mean'] = matrix_df.loc[matrix_df['mask.nghbr'], 'dis_mean'].median()
+            dist_scale_factor = matrix_df.loc[matrix_df['mask.nghbr'], 'dis_median'].median()
+        matrix_df['dis_mean'] /= dist_scale_factor
+        matrix_df['dis_median'] /= dist_scale_factor
+
+    # Filter locus pairs / bins
+    if nonmissing_bin_percentile is not None:
+        raise ValueError("nonmissing_bin_percentile should be none, best to filter by locus, not locus pair / bin")
+        matrix_df = matrix_df[matrix_df.nonmissing > matrix_df.nonmissing.quantile(
+            nonmissing_bin_percentile)]
+
+    return matrix_df, dist_scale_factor
+
+
+def determine_max_nreads(matrix_df, verbose=True):
+    matrix_df['numerator'] = (matrix_df.counts * matrix_df.nonmissing).round(2).astype(int)
+
+    mask = (~matrix_df.nonmissing.isnull()) & (matrix_df.counts != 0) & (matrix_df.numerator == 1)
+    nonmissing_filt = matrix_df.loc[mask, 'nonmissing']
+    if verbose > 1:
+        print(nonmissing_filt.describe().round(2).to_string(), flush=True)
+    
+    fact = nonmissing_filt.mean()
+    nreads = np.nansum(matrix_df.counts.values) * fact
+    if verbose:
+        print(f"{fact = :.3g} = 1/{1/fact:.3g}...    {nreads = :.3g}", flush=True)
+
+    return nreads
+
+
+def get_integer_counts(matrix_df, nreads='auto', verbose=True):
+    if nreads is None or isinstance(nreads, str) and nreads.lower() == 'auto':
+        nreads = determine_max_nreads(matrix_df, verbose=verbose)
+    matrix_df['counts_int'] = (
+        matrix_df.counts * nreads / matrix_df.counts.sum()).round().astype(int)
+
+    return matrix_df
+
+
+def filter_loci_by_cell_cov_percentile(lengths_df, percentile, verbose=True):
+    cell_cov_min = lengths_df.cell_cov_min.copy()
+    cell_cov_min[cell_cov_min.isnull()] = 0
+
+    if percentile is None or not percentile or not cell_cov_min.quantile(percentile):
+        if verbose:
+            print("No additional filtering of loci performed, minimum coverage"
+                  f" of included loci is {cell_cov_min[cell_cov_min != 0].min() * 100:.3g}%.", flush=True)
+        return
+
+    cutoff = cell_cov_min.quantile(percentile)
+    remove_loci_ambig = lengths_df.loc[lengths_df.cell_cov_min.isnull() | (
+        lengths_df.cell_cov_min < cutoff), 'idx_genome'].values
+
+    if verbose:
+        n = len(lengths_df)
+        extra_remove_nloci_ambig = lengths_df.loc[(~lengths_df.cell_cov_min.isnull()) & (
+            lengths_df.cell_cov_min != 0) & (lengths_df.cell_cov_min < cutoff), 'idx_genome'].values.size
+        print(f"Filtering out an additional {extra_remove_nloci_ambig} ("
+              f"{extra_remove_nloci_ambig / n * 100:.3g}%) loci from each homolog", flush=True)
+        print(f"A total of {remove_loci_ambig.size} ("
+              f"{remove_loci_ambig.size / n * 100:.3g}%) loci are excluded from each homolog", flush=True)
+
+    remove_loci = np.append(remove_loci_ambig, remove_loci_ambig + len(lengths_df))
+    return remove_loci
+
 
 def get_nghbr_bins(matrix, lengths):
     mask_intermol_nghbr = np.tile(lengths, 2).cumsum()[:-1] - 1
@@ -26,7 +126,7 @@ def get_beta_ua(counts, lengths):
     return beta_ua
 
 
-def get_unambig_counts(lengths_df, counts, matrices, nreads, outdir_counts=None, infer_alpha=False):
+def get_unambig_counts(lengths_df, counts, matrices, nreads=None, outdir_counts=None, infer_alpha=False):
     if outdir_counts is not None:
         os.makedirs(outdir_counts, exist_ok=True)
 
@@ -41,7 +141,8 @@ def get_unambig_counts(lengths_df, counts, matrices, nreads, outdir_counts=None,
 
     # Counts
     counts_int = np.triu(counts, 1)
-    counts_int = (counts_int * nreads / counts_int.sum()).round().astype(int)
+    if nreads is not None:
+        counts_int = (counts_int * nreads / counts_int.sum()).round().astype(int)
     if outdir_counts is not None:
         write_counts(os.path.join(outdir_counts, "ua_counts.matrix"), counts_int)
 
@@ -87,7 +188,7 @@ def get_unambig_counts(lengths_df, counts, matrices, nreads, outdir_counts=None,
     return counts_int, dis_scaled, lengths, scale_factors["nghbr_dis_mean.sc_mean"]
 
 
-def get_struct_features_of_sc_true(lengths_df, sc_dis_intramol, scale_factor,
+def get_struct_features_of_sc_true(lengths_df, sc_dis_intramol, dist_scale_factor,
                                    outfile=None, redo=False):
     if os.path.exist(outfile) and not redo:
         return pd.read_csv(outfile, index_col=0, sep='\t')
@@ -96,10 +197,10 @@ def get_struct_features_of_sc_true(lengths_df, sc_dis_intramol, scale_factor,
         sc_dis_intramol = pd.read_csv(
             sc_dis_intramol, sep='\t', header=None, index_col=0,
             converters={0: ast.literal_eval})
-        if scale_factor is not None and scale_factor != 1:
-            sc_dis_intramol /= scale_factor
-    elif scale_factor is not None and scale_factor != 1:
-        sc_dis_intramol = sc_dis_intramol / scale_factor
+        if dist_scale_factor is not None and dist_scale_factor != 1:
+            sc_dis_intramol /= dist_scale_factor
+    elif dist_scale_factor is not None and dist_scale_factor != 1:
+        sc_dis_intramol = sc_dis_intramol / dist_scale_factor
 
     if isinstance(lengths_df, str):
         lengths_df = pd.read_csv(lengths_df, sep="\t")
@@ -124,7 +225,7 @@ def get_struct_features_of_sc_true(lengths_df, sc_dis_intramol, scale_factor,
     return sc_other_feat
 
 
-def save_sc_data(dir_matrix2d, lengths_df, scale_factor, outdir, redo=False):
+def save_sc_data(dir_matrix2d, lengths_df, dist_scale_factor, outdir, redo=False):
     sc_dis_file = glob.glob(os.path.join(dir_matrix2d, '*.distances.per_locus.tsv.gz'))
     sc_dis_intramol_file = glob.glob(os.path.join(dir_matrix2d, '*.distances.intramol.tsv.gz'))
     if len(sc_dis_file) != 1:
@@ -141,7 +242,7 @@ def save_sc_data(dir_matrix2d, lengths_df, scale_factor, outdir, redo=False):
     if redo or not os.path.exist(outfile_per_locus):
         sc_dis = load_sc_dis_per_locus(sc_dis_file, scale=False, verbose=verbose)
         for col in ['dis_mean', 'dis_med', 'dis']:
-            sc_dis[col] /= scale_factor
+            sc_dis[col] /= dist_scale_factor
     
         sc_dis['dis'] = sc_dis.dis.apply(lambda x: x.tolist())
         sc_dis.to_csv(outfile, index=True, header=False, sep='\t')
@@ -149,12 +250,12 @@ def save_sc_data(dir_matrix2d, lengths_df, scale_factor, outdir, redo=False):
     if redo or not os.path.exist(outfile_features):
         get_struct_features_of_sc_true(
             lengths_df, sc_dis_intramol=sc_dis_intramol_file,
-            scale_factor=scale_factor, outfile=outfile_features, redo=redo)
+            dist_scale_factor=dist_scale_factor, outfile=outfile_features, redo=redo)
 
 
-def save_dataset(input_file, nreads, outdir, min_nonmissing_per_phased_locus=0.05, nmol_per_hmlg_ratio=1,
-                 spacing=2.5, contact_th=0.5, redo=False, name=None, verbose=False):
-
+def load_and_filter_data(input_file, min_percentile_loci_cov,
+                         min_nonmissing_per_phased_locus=0.05, nmol_per_hmlg_ratio=1,
+                         spacing=2.5, contact_th=0.75, name=None, verbose=True):
     if name is None:
         name = re.sub(r'(^|.*/)cluster/([^/]+)(/.*|$)', r'\2', os.path.dirname(input_file))
     if nmol_per_hmlg_ratio >= 1000:
@@ -162,15 +263,61 @@ def save_dataset(input_file, nreads, outdir, min_nonmissing_per_phased_locus=0.0
     matrices, lengths_df, dir_matrix2d = process_sc_dna_coords(
         input_file=input_file, min_nonmissing_per_phased_locus=min_nonmissing_per_phased_locus,
         nmol_per_hmlg_ratio=nmol_per_hmlg_ratio, spacing=spacing, name=name,
-        contact_th=contact_th, outdir=os.path.dirname(input_file), verbose=verbose)
+        contact_th=contact_th, verbose=False)
+
+    # Additional filtering of loci
+    remove_loci = filter_loci_by_cell_cov_percentile(
+        lengths_df, percentile=min_percentile_loci_cov, verbose=verbose)
+    if remove_loci is not None:
+        for key in matrices.keys():
+            if key in ('dis_mean', 'dis_median'):
+                matrices[key][remove_loci, :] = np.nan
+                matrices[key][:, remove_loci] = np.nan
+            else:
+                matrices[key][remove_loci, :] = 0
+                matrices[key][:, remove_loci] = 0
+
+    return matrices, lengths_df, dir_matrix2d, name
+
+
+def save_dataset(input_file, nreads, outdir, min_percentile_loci_cov,
+                 min_nonmissing_per_phased_locus=0.05, nmol_per_hmlg_ratio=1,
+                 spacing=2.5, contact_th=0.75, redo=False, name=None, verbose=True):
+
+    matrices, lengths_df, dir_matrix2d, name = load_and_filter_data(
+        input_file, min_percentile_loci_cov=min_percentile_loci_cov,
+        min_nonmissing_per_phased_locus=min_nonmissing_per_phased_locus,
+        nmol_per_hmlg_ratio=nmol_per_hmlg_ratio, spacing=spacing,
+        contact_th=contact_th, name=name, verbose=verbose)
+
+    matrix_df, dist_scale_factor = prep_matrix_df(lengths_df, matrices=matrices)
+
+    if nreads is None or isinstance(nreads, str) and nreads.lower() == 'auto':
+        nreads = determine_max_nreads(matrix_df, verbose=verbose)
+    matrix_df = get_integer_counts(matrix_df, nreads=nreads)
 
     outdir_ua_counts = os.path.join(
         outdir, "counts", "unambig", f"{name}.nreads{nreads:.3g}".replace('e+0', 'e').replace('e+', 'e'))
-    _, _, _, scale_factor = get_unambig_counts(
-        lengths_df, counts=matrices['counts'], matrices=matrices, nreads=nreads,
-        outdir_counts=outdir_ua_counts)
+
+    if verbose:
+        print("\nALPHA INFERENCE WITH 'TRUE' SINGLE-CELL DISTANCES:\n", flush=True)
+    alpha_floatcounts, beta_floatcounts = estimate_alphas_from_true_dis(
+        matrix_df, use_poisson=False, integer_counts=False, dis_agg_func='mean', infer_alpha_mask=None,
+        infer_alpha_mods='beta_from_intra_only', plot=True,
+        outdir_fig=os.path.join(outdir_ua_counts, 'images'), verbose=verbose)
+    if verbose:
+        print(flush=True)
+    alpha_intcounts, beta_intcounts = estimate_alphas_from_true_dis(
+        matrix_df, use_poisson=True, integer_counts=True, dis_agg_func='mean', infer_alpha_mask=None,
+        infer_alpha_mods='beta_from_intra_only', plot=True,
+        outdir_fig=os.path.join(outdir_ua_counts, 'images'), verbose=verbose)
+
+    # _, _, _, dist_scale_factor = get_unambig_counts(
+    #     lengths_df, counts=matrices['counts'], matrices=matrices, nreads=nreads,
+    #     outdir_counts=outdir_ua_counts)
+
     save_sc_data(
-        dir_matrix2d=dir_matrix2d, lengths_df=lengths_df, scale_factor=scale_factor,
+        dir_matrix2d=dir_matrix2d, lengths_df=lengths_df, dist_scale_factor=dist_scale_factor,
         outdir=outdir_ua_counts, redo=False)
 
 
@@ -185,7 +332,7 @@ def main():
     parser.add_argument("--nmol_per_hmlg_ratio", default=1, type=float)
     parser.add_argument("--outdir", type=str)
     parser.add_argument("--name", type=str)
-    parser.add_argument("--contact_th", default=0.5, type=float)
+    parser.add_argument("--contact_th", default=0.75, type=float)
     # parser.add_argument("--chrom", type=str, nargs='+')
     parser.add_argument('--verbose', default=True, action='store_true')
     parser.add_argument('--silent', dest='verbose', default=True, action='store_false')

@@ -10,7 +10,7 @@ from process_loci import get_index_of_loci
 from topsy.analysis.compare_distances import make_matrix_df
 
 
-def generate_counts_from_sc_dist(sc_dist_vec, contact_th=0.5, idx=None, exclude_missing_loci=False):
+def generate_counts_from_sc_dist(sc_dist_vec, contact_th=0.75, idx=None, exclude_missing_loci=False):
     if contact_th > np.nanmax(sc_dist_vec) or contact_th < np.nanmin(sc_dist_vec):
         raise ValueError(f"{contact_th=}μm is not appropriate for sc distances, which range from"
                          f" {np.nanmin(sc_dist_vec):g}μm to {np.nanmax(sc_dist_vec):g}μm")
@@ -81,7 +81,7 @@ def save_sc_dis_per_locus(sc_dist_vec, idx, outfile, lengths_df):
     df.to_csv(outfile, index=False, header=False, sep='\t')
 
 
-def process_sc_distances(sc_dna_coords, idx, outdir, lengths_df, contact_th=0.5, name=None, redo=False):
+def process_sc_distances(sc_dna_coords, idx, outdir, lengths_df, contact_th=0.75, name=None, redo=False):
     os.makedirs(outdir, exist_ok=True)
     if name is not None and name != "":
         name = f"{name}."
@@ -150,7 +150,7 @@ def process_sc_distances(sc_dna_coords, idx, outdir, lengths_df, contact_th=0.5,
             np.save(nonmissing_per_locus_pair_file, nonmissing_per_locus_pair)
     else:
         mean_counts_matrix = np.load(mean_counts_matrix_file)
-        nonmissing_per_locus_pair = np.load(nonmissing_per_locus_pair_file).astype(int)
+        nonmissing_per_locus_pair = np.load(nonmissing_per_locus_pair_file, dtype=int)
 
     if redo or not os.path.exists(sc_dist_per_locus_file):
         print('Saving single-cell distances per locus...', flush=True)
@@ -179,7 +179,13 @@ def add_missing_loci(df, spacing=2.5):
 
 
 def process_sc_dna_coords(input_file, outdir=None, min_nonmissing_per_phased_locus=0.05, nmol_per_hmlg_ratio=1,
-                          spacing=2.5, contact_th=0.5, redo=False, name=None, verbose=False):
+                          spacing=2.5, contact_th=0.75, redo=False, name=None, verbose=False):
+
+    # Assign defaults
+    if min_nonmissing_per_phased_locus is None:
+        min_nonmissing_per_phased_locus = 0.05
+    if nmol_per_hmlg_ratio is None:
+        nmol_per_hmlg_ratio = 1
 
     if outdir is None:
         outdir = os.path.dirname(input_file)
@@ -248,7 +254,7 @@ def main():
     parser.add_argument("--nmol_per_hmlg_ratio", default=1, type=float)
     parser.add_argument("--outdir", type=str)
     parser.add_argument("--name", type=str)
-    parser.add_argument("--contact_th", default=0.5, type=float)
+    parser.add_argument("--contact_th", default=0.75, type=float)
     # parser.add_argument("--chrom", type=str, nargs='+')
     parser.add_argument('--verbose', default=True, action='store_true')
     parser.add_argument('--silent', dest='verbose', default=True, action='store_false')

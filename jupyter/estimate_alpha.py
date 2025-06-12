@@ -14,24 +14,24 @@ from topsy.analysis.compare_distances import make_matrix_df
 
 
 
-def plot_counts_vs_dis(matrix_df, mask, alpha, beta=None, title=None, scatter_opacity=0.1, outfile=None):
+def plot_counts_vs_dis(matrix_df, mask, alpha, counts_col, dis_col='dis_mean', beta=None,
+                       title=None, scatter_opacity=0.1, outfile=None, counts_max_percentile=0.999,
+                       counts_scatter_percentile=0.95):
+    matrix_df['dis_inverse'] = matrix_df[dis_col].pow(-1)
+
+    mask = mask & (matrix_df[counts_col] < matrix_df.loc[mask, counts_col].quantile(
+        counts_max_percentile))
+    
     x = np.linspace(matrix_df.loc[mask, 'dis_inverse'].min(), matrix_df.loc[mask, 'dis_inverse'].max(), 100)
     if beta is None:
-        beta = matrix_df.counts.sum() / np.sum(np.power(matrix_df.dis, alpha))
-    if verbose:
-        print(f"β={beta:.3g}", flush=True)
-    y = beta * np.power(x, alpha)  # Pseudo-counts
+        beta = matrix_df[counts_col].sum() / np.sum(np.power(matrix_df[dis_col], alpha))
+    y = beta * np.power(x, -alpha)  # beta * dis^alpha
 
-    # if integer_counts_nreads is not None:
-    #     matrix_df["counts_int"] = (matrix_df.counts * integer_counts_nreads / matrix_df.counts.sum()).round()
-    #     y_col = "counts_int"
-    # else:
-    #     y_col = "counts"
-
-    sns.jointplot(data=matrix_df[mask], x='dis_inverse', y=y_col, kind='hex')
+    sns.jointplot(data=matrix_df[mask], x='dis_inverse', y=counts_col, kind='hex')
+    cutoff = matrix_df.loc[mask, counts_col].quantile(counts_scatter_percentile)
     sns.scatterplot(
-        data=matrix_df[mask & (matrix_df.counts > matrix_df.counts.quantile(0.999))],
-        x='dis_inverse', y=y_col, linewidths=0, alpha=scatter_opacity, s=10)
+        data=matrix_df[mask & (matrix_df[counts_col] > cutoff)],
+        x='dis_inverse', y=counts_col, linewidths=0, alpha=scatter_opacity, s=10)
     plt.plot(x, y, color='red')
     plt.xlabel("Inverse distances, $d_{ij}^{-1}$")
     plt.ylabel("Pseudo-counts, $c_{ij}$")
@@ -45,34 +45,14 @@ def plot_counts_vs_dis(matrix_df, mask, alpha, beta=None, title=None, scatter_op
         plt.savefig(outfile)
     plt.clf()
 
+    matrix_df.drop('dis_inverse', axis=1, inplace=True)
 
-def estimate_alphas_from_true_dis(lengths_df, dis_matrix, counts_matrix, nonmissing_matrix, nonmissing_percentile=0.5):
-    matrix_df = make_matrix_df(
-        lengths_df=lengths_df,
-        matrix_dict={'dis': dis_matrix, 'counts': counts_matrix, 'nonmissing': nonmissing_matrix})
 
-    matrix_df['genomic_dis'] = None
-    matrix_df.loc[matrix_df['mask.sameC-sameH'], 'genomic_dis'] = (matrix_df['i.idx'] - matrix_df['j.idx']).abs()
-    matrix_df['mask.nghbr'] = matrix_df['mask.sameC-sameH'] & (matrix_df.genomic_dis == 1)
-
-    matrix_df['dis'] /= matrix_df.loc[matrix_df['mask.nghbr'], 'dis'].mean()  # Scale distances
-    matrix_df['dis_inverse'] = matrix_df.dis.pow(-1)
-
-    # Remove loci that are entirely missing in sc dataset
-    n = len(lengths_df)  # n = nbeads / ploidy
-    excluded_loci = np.where((nonmissing_matrix == 0).all(axis=0))[0]
-    excluded_loci[excluded_loci >= n] -= n
-    excluded_loci = np.unique(excluded_loci)  # If excluded in one hmlg, exclude in both
-    mask = (~matrix_df['i.idx_ambig'].isin(excluded_loci)) & (~matrix_df['j.idx_ambig'].isin(excluded_loci))
-    matrix_df = matrix_df[mask]
-
-    # Filter locus pairs
-    # matrix_df = matrix_df[matrix_df.counts != 0]
-    # matrix_df = matrix_df[matrix_df.nonmissing > 0]
-    if nonmissing_percentile is not None:
-        matrix_df = matrix_df[matrix_df.nonmissing > matrix_df.nonmissing.quantile(nonmissing_percentile)]
-
-    return matrix_df
+def estimate_alphas_from_true_dis(matrix_df, num_infer=10, use_poisson=True, integer_counts=True,
+                                  dis_agg_func='mean', infer_alpha_mask=None, infer_alpha_mods=None,
+                                  plot=True, outdir_fig=None, verbose=True):
+    
+    pass
 
 
 # ===================================================================================================================
@@ -156,8 +136,9 @@ def grad_wrap(alphas, counts, dis, intramol_mask, use_poisson=False, mods=[], ve
     return np.array(fit_alpha_obj(alphas, counts=counts, dis=dis, intramol_mask=intramol_mask, use_poisson=use_poisson, mods=mods)).ravel()
 
 
-def estimate_alpha(matrix_df, x0=None, bounds=(-6, -1), use_poisson=False, mods=[], seed=0, verbose=False):
-
+def estimate_alpha(matrix_df, counts_col, dis_col='dis_mean', x0=None, bounds=(-6, -1), use_poisson=False, mods=[], seed=0, verbose=False):
+    if mods is None:
+        mods = []
     if isinstance(mods, str):
         mods = [mods]
     if 'alpha_from_intra_only' in mods:
@@ -173,8 +154,8 @@ def estimate_alpha(matrix_df, x0=None, bounds=(-6, -1), use_poisson=False, mods=
     x0 = np.asarray(x0)
     bounds = np.repeat(np.asarray(bounds).reshape(1, -1), num_alphas, axis=0)
 
-    counts = matrix_df.counts.values
-    args = [counts, matrix_df[f"dis"].values, matrix_df['mask.sameC-sameH'].values, use_poisson, mods]
+    counts = matrix_df[counts_col].values
+    args = [counts, matrix_df[dis_col].values, matrix_df['mask.sameC-sameH'].values, use_poisson, mods]
 
     if verbose:
         print("OPTIMIZING:", flush=True)
@@ -193,11 +174,11 @@ def estimate_alpha(matrix_df, x0=None, bounds=(-6, -1), use_poisson=False, mods=
     d['beta'] = estimate_beta(X, *args)._value
     if verbose:
         print("\nRESULTS:", flush=True)
-        print_est_alpha_results(d)
+        print_alpha_infer_results(d)
     return d
 
 
-def print_est_alpha_results(d):
+def print_alpha_infer_results(d):
     for k, v in d.items():
         if k == 'grad':
             v = f"{v.mean():.3g}"
@@ -205,6 +186,6 @@ def print_est_alpha_results(d):
             v = f"INTRA={v[0]:.3g}, inter={v[1]:.3g}"
         elif isinstance(v, float):
             v = f"{v:.3g}"
-        elif isinstance(v, np.ndarray):
+        elif isinstance(v, np.ndarray) and v.size > 1:
             v = ', '.join([f"{x:.3g}" for x in v])
         print(f"{k.ljust(10)}   {v}", flush=True)
