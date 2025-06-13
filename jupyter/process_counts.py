@@ -113,20 +113,24 @@ def filter_loci_by_cell_cov_percentile(lengths_df, percentile, verbose=True):
     return remove_loci
 
 
-def get_nghbr_bins(matrix, lengths):
-    mask_intermol_nghbr = np.tile(lengths, 2).cumsum()[:-1] - 1
-    nghbr_bins = np.diagonal(matrix, offset=1).copy().astype(float)
-    nghbr_bins[mask_intermol_nghbr] = np.nan
-    return nghbr_bins
+# def get_nghbr_bins(matrix, lengths):
+#     mask_intermol_nghbr = np.tile(lengths, 2).cumsum()[:-1] - 1
+#     nghbr_bins = np.diagonal(matrix, offset=1).copy().astype(float)
+#     nghbr_bins[mask_intermol_nghbr] = np.nan
+#     return nghbr_bins
 
 
-def get_beta_ua(counts, lengths):
-    # Get beta such that distance between neighbor beads is 1
-    beta_ua = np.nanmean(get_nghbr_bins(counts, lengths=lengths))
-    return beta_ua
+# def get_beta_ua(counts, lengths):
+#     # Get beta such that distance between neighbor beads is 1
+#     beta_ua = np.nanmean(get_nghbr_bins(counts, lengths=lengths))
+#     return beta_ua
 
 
-def get_unambig_counts(lengths_df, counts, matrices, nreads=None, outdir_counts=None, infer_alpha=False):
+def save_matrices(lengths_df, matrix_df, ambiguity='ua', alpha=None, beta=None,
+                  dist_scale_factor=None, counts_col='counts_int', ploidy=2, outdir_counts=None):
+    ambiguity = ambiguity.lower()
+    if ambiguity not in ('ua', 'pa', 'ambig'):
+        raise ValueError(f"{ambiguity=:}, must be 'ua', 'pa', or 'ambig'")
     if outdir_counts is not None:
         os.makedirs(outdir_counts, exist_ok=True)
 
@@ -140,39 +144,39 @@ def get_unambig_counts(lengths_df, counts, matrices, nreads=None, outdir_counts=
         lengths_df.to_csv(os.path.join(outdir_counts, "counts.bed"), index=False, header=True, sep="\t")
 
     # Counts
-    counts_int = np.triu(counts, 1)
-    if nreads is not None:
-        counts_int = (counts_int * nreads / counts_int.sum()).round().astype(int)
+    beta_counts = beta
+    ua_ratio = pa_ratio = 0
+    counts_dtype = {'counts_int': int, 'counts': float}
+    if ambiguity == 'ua' or ploidy == 1:
+        ua_ratio = 1
+        counts = np.zeros((lengths.sum() * ploidy, lengths.sum() * ploidy), dtype=counts_dtype)
+        counts[matrix_df['i.idx'], matrix_df['j.idx']] = matrix_df[counts_col]
+    elif ambiguity == 'pa':
+        pa_ratio = 1
+        raise NotImplementedError("Implement partially ambig (and adjust beta for PA)")
+        if beta is not None:
+            beta_counts = None # divide/multiply (?) by 2...?
+    else:
+        counts = np.zeros((lengths.sum(), lengths.sum()), dtype=counts_dtype)
+        matrix_df_ambig = matrix_df.groupby(
+            ['i.idx_ambig', 'j.idx_ambig'])[counts_col].sum().reset_index()
+        counts[matrix_df_ambig['i.idx_ambig'], matrix_df_ambig['j.idx_ambig']] = matrix_df_ambig
     if outdir_counts is not None:
-        write_counts(os.path.join(outdir_counts, "ua_counts.matrix"), counts_int)
+        write_counts(os.path.join(outdir_counts, f"{ambiguity}_counts.matrix"), counts)
 
-    # Distances, scaled such that mean distance between neighbor beads is 1
-    dis_scaled = {}
-    scale_factors = {}
-    mask_intermol_nghbr = np.tile(lengths_s.values, 2).cumsum()[:-1] - 1
+    # Distances
+    dis = {}
     for agg_func in ['mean', 'median']:
-        nghbr_dis = np.diagonal(matrices[f'dis_{agg_func}'], offset=1).copy()
-        nghbr_dis[mask_intermol_nghbr] = np.nan
-        nghbr_dis_mean = np.nanmean(nghbr_dis)
-        scale_factors[f"nghbr_dis_mean.sc_{agg_func}"] = nghbr_dis_mean
-        scale_factors[f"nghbr_dis_med.sc_{agg_func}"] = np.nanmedian(nghbr_dis)
-        dis_scaled[agg_func] = matrices[f'dis_{agg_func}'] / nghbr_dis_mean
+        dis[agg_func] = np.zeros((lengths.sum() * ploidy, lengths.sum() * ploidy))
+        dis[agg_func][matrix_df['i.idx'], matrix_df['j.idx']] = matrix_df[f'dis_{agg_func}']
         if outdir_counts is not None:
-            np.save(os.path.join(outdir_counts, f"distances_true.{agg_func}.npy"), dis_scaled[agg_func])
-
-    # # Get beta such that distance between neighbor beads is 1
-    # est_beta_ua = get_beta_ua(counts=counts_int, lengths=lengths_s.values)
-
-    if infer_alpha:
-        pass
+            np.save(os.path.join(outdir_counts, f"distances_true.{agg_func}.npy"), dis[agg_func])
 
     # Metadata
     if outdir_counts is not None:        
         dataset_info = pd.Series({
-            'ploidy': 2, 'nreads': counts_int.sum(), 'ua': 1, 'pa': 0, 'lengths': lengths_s.values,
-            'beta': None, 'beta_ua': None, 'alpha': None})
-        for key, value in scale_factors.items():
-            dataset_info[key] = value
+            'ploidy': 2, 'nreads': counts_int.sum(), 'ua': ua_ratio, 'pa': pa_ratio, 'lengths': lengths_s.values,
+            'beta': beta, f'beta_{ambiguity}': beta_counts, 'alpha': alpha, 'dist_scale_factor': dist_scale_factor})
         dataset_info.to_csv(os.path.join(outdir_counts, "dataset_info.txt"), sep="\t", header=False)
 
     # Plot counts & distances
@@ -182,7 +186,7 @@ def get_unambig_counts(lengths_df, counts, matrices, nreads=None, outdir_counts=
             outfile=os.path.join(outdir_counts, "images", "ua_counts.png"), mark_excluded=True)
         for agg_func in ['mean', 'median']:
             plot_distance_matrix(
-                dis_scaled[agg_func], lengths=lengths, ploidy=2, title=f"'True' distances\n{agg_func} across cells",
+                dis[agg_func], lengths=lengths, ploidy=2, title=f"'True' distances\n{agg_func} across cells",
                 outfile=os.path.join(outdir_counts, "images", f"distances_true.{agg_func}.png"))
     
     return counts_int, dis_scaled, lengths, scale_factors["nghbr_dis_mean.sc_mean"]
@@ -312,7 +316,7 @@ def save_dataset(input_file, nreads, outdir, min_percentile_loci_cov,
         infer_alpha_mods='beta_from_intra_only', plot=True,
         outdir_fig=os.path.join(outdir_ua_counts, 'images'), verbose=verbose)
 
-    # _, _, _, dist_scale_factor = get_unambig_counts(
+    # _, _, _, dist_scale_factor = save_matrices(
     #     lengths_df, counts=matrices['counts'], matrices=matrices, nreads=nreads,
     #     outdir_counts=outdir_ua_counts)
 
