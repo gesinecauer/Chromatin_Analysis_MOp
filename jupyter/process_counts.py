@@ -189,7 +189,7 @@ def save_matrices(lengths_df, matrix_df, ambiguity='ua', alpha=None, beta=None,
                 dis[agg_func], lengths=lengths, ploidy=2, title=f"'True' distances\n{agg_func} across cells",
                 outfile=os.path.join(outdir_counts, "images", f"distances_true.{agg_func}.png"))
     
-    return counts_int, dis_scaled, lengths, scale_factors["nghbr_dis_mean.sc_mean"]
+    return counts, dis, lengths
 
 
 def get_struct_features_of_sc_true(lengths_df, sc_dis_intramol, dist_scale_factor,
@@ -284,7 +284,7 @@ def load_and_filter_data(input_file, min_percentile_loci_cov,
     return matrices, lengths_df, dir_matrix2d, name
 
 
-def save_dataset(input_file, nreads, outdir, min_percentile_loci_cov,
+def save_dataset(input_file, nreads, outdir, min_percentile_loci_cov, ambiguity='ua',
                  min_nonmissing_per_phased_locus=0.05, nmol_per_hmlg_ratio=1,
                  spacing=2.5, contact_th=0.75, redo=False, name=None, verbose=True):
 
@@ -293,36 +293,42 @@ def save_dataset(input_file, nreads, outdir, min_percentile_loci_cov,
         min_nonmissing_per_phased_locus=min_nonmissing_per_phased_locus,
         nmol_per_hmlg_ratio=nmol_per_hmlg_ratio, spacing=spacing,
         contact_th=contact_th, name=name, verbose=verbose)
-
     matrix_df, dist_scale_factor = prep_matrix_df(lengths_df, matrices=matrices)
 
     if nreads is None or isinstance(nreads, str) and nreads.lower() == 'auto':
         nreads = determine_max_nreads(matrix_df, verbose=verbose)
     matrix_df = get_integer_counts(matrix_df, nreads=nreads)
 
-    outdir_ua_counts = os.path.join(
-        outdir, "counts", "unambig", f"{name}.nreads{nreads:.3g}".replace('e+0', 'e').replace('e+', 'e'))
+    outdir_dataset = os.path.join(
+        outdir, "counts", "misc", f"{name}.nreads{nreads:.3g}".replace('e+0', 'e').replace('e+', 'e'))
+    outdir_counts = os.path.join(
+        outdir, "counts", ambiguity, f"{name}.nreads{nreads:.3g}".replace('e+0', 'e').replace('e+', 'e'))
 
+    if ambiguity != 'ua':
+        raise NotImplementedError("Alpha inference for ambig/pa") # TODO
     if verbose:
         print("\nALPHA INFERENCE WITH 'TRUE' SINGLE-CELL DISTANCES:\n", flush=True)
     alpha_floatcounts, beta_floatcounts = estimate_alphas_from_true_dis(
         matrix_df, use_poisson=False, integer_counts=False, dis_agg_func='mean', infer_alpha_mask=None,
         infer_alpha_mods='beta_from_intra_only', plot=True,
-        outdir_fig=os.path.join(outdir_ua_counts, 'images'), verbose=verbose)
+        outdir_fig=os.path.join(outdir_counts, 'images'), verbose=verbose)
     if verbose:
         print(flush=True)
     alpha_intcounts, beta_intcounts = estimate_alphas_from_true_dis(
         matrix_df, use_poisson=True, integer_counts=True, dis_agg_func='mean', infer_alpha_mask=None,
         infer_alpha_mods='beta_from_intra_only', plot=True,
-        outdir_fig=os.path.join(outdir_ua_counts, 'images'), verbose=verbose)
+        outdir_fig=os.path.join(outdir_counts, 'images'), verbose=verbose)
 
-    # _, _, _, dist_scale_factor = save_matrices(
-    #     lengths_df, counts=matrices['counts'], matrices=matrices, nreads=nreads,
-    #     outdir_counts=outdir_ua_counts)
+    # TODO save values for alpha/beta inferred from each method
+    raise NotImplementedError("choose whether to use alpha from int/float counts (and update beta to match int counts if using alpha from float counts)") # TODO
+
+    counts, dis, lengths = save_matrices(
+        lengths_df, matrix_df=matrix_df, ambiguity=ambiguity, alpha=alpha, beta=beta,
+        dist_scale_factor=dist_scale_factor, counts_col='counts_int', outdir_counts=outdir_counts)
 
     save_sc_data(
         dir_matrix2d=dir_matrix2d, lengths_df=lengths_df, dist_scale_factor=dist_scale_factor,
-        outdir=outdir_ua_counts, redo=False)
+        outdir=outdir_dataset, redo=False)
 
 
     
