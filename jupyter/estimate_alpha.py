@@ -13,6 +13,68 @@ from pastis.optimization.likelihoods import poisson_nll
 from topsy.analysis.compare_distances import make_matrix_df
 
 
+def infer_alpha_float_vs_int(matrix_df, ambiguity='ua', dis_agg_func='mean', infer_alpha_mask=None,
+                             infer_alpha_mods=None, plot=True, outdir=None, num_infer=10, verbose=True):
+    from process_counts import filter_matrix_df
+
+    # Prepare data
+    if ambiguity.lower() == 'ambig':
+        matrix_df = ambiguate_matrix_df(matrix_df)
+    elif ambiguity.lower() == 'pa':
+        raise NotImplemetedError("Alpha inference for partially ambig")
+    matrix_df = filter_matrix_df(matrix_df, mask=infer_alpha_mask)
+
+    if verbose:
+        print("ALPHA INFERENCE WITH 'TRUE' SINGLE-CELL DISTANCES:", flush=True)
+    results = []
+
+    # Infer alpha with float-counts
+    alpha, beta, obj = estimate_alphas_from_true_dis(
+        matrix_df, num_infer=num_infer, use_poisson=False, integer_counts=False,
+        dis_agg_func=dis_agg_func, infer_alpha_mask=infer_alpha_mask,
+        infer_alpha_mods=infer_alpha_mods, plot=plot,
+        outdir=outdir, verbose=False)
+    results.append({
+        'desc': 'infer_alpha.non-integer.mse', 'alpha': alpha,
+        'beta': beta, 'obj': obj})
+
+    if 'counts_int' not in matrix_df.columns:
+        results = pd.DataFrame(results)
+        if verbose:
+            print('\t' + results.to_string(index=False).replace('\n', '\t\n'),
+                  flush=True)
+
+        return alpha, beta, results
+
+    # Get objective & beta for alpha obtained above alongside integer-counts
+    res = estimate_alpha(
+        matrix_df, counts_col='counts_int', x0=alpha, use_poisson=True,
+        mods=infer_alpha_mods, max_iter=0, verbose=False)
+    results.append({
+        'desc': 'eval_at_alpha.poisson', 'alpha': alpha,
+        'beta': res['beta'], 'obj': res['obj']})
+
+    # Infer alpha with integer-counts, with designated nreads
+    alpha, beta, obj = estimate_alphas_from_true_dis(
+        matrix_df, num_infer=num_infer, use_poisson=True, integer_counts=True,
+        dis_agg_func=dis_agg_func, infer_alpha_mask=infer_alpha_mask,
+        infer_alpha_mods=infer_alpha_mods, plot=plot,
+        outdir=outdir, verbose=False)
+    results.append({
+        'desc': 'infer_alpha.poisson', 'alpha': alpha, 'beta': beta,
+        'obj': obj})
+
+    results = pd.DataFrame(results)
+    if verbose:
+        print('\t' + results.to_string(index=False).replace('\n', '\t\n'),
+              flush=True)
+
+    tmp = results[results.desc.isin(['eval_at_alpha.poisson', 'infer_alpha.poisson'])]
+    alpha, beta = tmp.loc[tmp.obj == tmp.obj.min(), ['alpha', 'beta']].values
+
+    return alpha, beta, results
+
+
 
 def plot_counts_vs_dis(matrix_df, mask, alpha, counts_col, dis_col='dis_mean', beta=None,
                        title=None, scatter_opacity=0.1, outfile=None, counts_max_percentile=0.999,
@@ -59,28 +121,30 @@ def estimate_alphas_from_true_dis(matrix_df, num_infer=10, use_poisson=True, int
 # ===================================================================================================================
 
 
-def estimate_beta(alphas, counts, dis, intramol_mask, use_poisson=False, mods=[], verbose=False):
+def estimate_beta(alphas, counts, dis, mask_intra, use_poisson=False, mods=[], verbose=False):
     if alphas.size == 1:
         beta = ag_np.sum(counts) / ag_np.sum(ag_np.power(dis, alphas))
         return beta
     alpha_intra, alpha_inter = alphas
-    dis_alpha_intra = ag_np.sum(ag_np.power(dis[intramol_mask], alpha_intra))
+    dis_alpha_intra = ag_np.sum(ag_np.power(dis[mask_intra], alpha_intra))
     if 'beta_from_intra_only' in mods:
-        beta = ag_np.sum(counts[intramol_mask]) / dis_alpha_intra
+        beta = ag_np.sum(counts[mask_intra]) / dis_alpha_intra
     else:
-        dis_alpha_inter = ag_np.sum(ag_np.power(dis[~intramol_mask], alpha_inter))
+        dis_alpha_inter = ag_np.sum(ag_np.power(dis[~mask_intra], alpha_inter))
         beta = ag_np.sum(counts) / (dis_alpha_intra + dis_alpha_inter)
     if verbose:
-        if verbose > 1 or not np.isclose(alpha_intra, -2, atol=1e-3):
+        if verbose > 1:
             print(f"\nβ={beta:g}\tINTRA={dis_alpha_intra:.3g}\tinter={dis_alpha_inter:.3g}")
     return beta
 
 
-def fit_alpha_obj(alphas, counts, dis, intramol_mask, use_poisson=False, mods=[], verbose=False):
-    beta = estimate_beta(alphas, counts=counts, dis=dis, intramol_mask=intramol_mask, mods=mods)
-    
+def fit_alpha_obj(alphas, counts, dis, mask_intra, use_poisson=False, mods=[], verbose=False):
+    beta = estimate_beta(alphas, counts=counts, dis=dis, mask_intra=mask_intra, mods=mods)
+
     if alphas.size == 1:
         lambda_pois = beta * ag_np.power(dis, alphas)
+        if len(lambda_pois.shape) > 1:
+            lambda_pois = ag_np.sum(lambda_pois, axis=1)
         if use_poisson:
             obj = poisson_nll(counts, lambda_pois=lambda_pois)
         else:
@@ -88,23 +152,27 @@ def fit_alpha_obj(alphas, counts, dis, intramol_mask, use_poisson=False, mods=[]
         if verbose:
             print(f"α={alphas[0]:.3f}\tβ={beta.round():.3g}\tobj={obj.round():g}", flush=True)
         return obj
-        
+
     alpha_intra, alpha_inter = alphas
 
-    lambda_pois_intra = beta * ag_np.power(dis[intramol_mask], alpha_intra)
+    lambda_pois_intra = beta * ag_np.power(dis[mask_intra], alpha_intra)
+    if len(lambda_pois_intra.shape) > 1:
+        lambda_pois_intra = ag_np.sum(lambda_pois_intra, axis=1)
     if use_poisson:
-        obj_intra = poisson_nll(counts[intramol_mask], lambda_pois=lambda_pois_intra)
+        obj_intra = poisson_nll(counts[mask_intra], lambda_pois=lambda_pois_intra)
     else:
-        obj_intra = ag_np.square(lambda_pois_intra - counts[intramol_mask])
+        obj_intra = ag_np.square(lambda_pois_intra - counts[mask_intra])
 
     if 'alpha_from_intra_only' in mods:
         obj = ag_np.mean(obj_intra)
     else:
-        lambda_pois_inter = beta * ag_np.power(dis[~intramol_mask], alpha_inter)
+        lambda_pois_inter = beta * ag_np.power(dis[~mask_intra], alpha_inter)
+        if len(lambda_pois_inter.shape) > 1:
+            lambda_pois_inter = ag_np.sum(lambda_pois_inter, axis=1)
         if use_poisson:
-            obj_inter = poisson_nll(counts[~intramol_mask], lambda_pois=lambda_pois_inter)
+            obj_inter = poisson_nll(counts[~mask_intra], lambda_pois=lambda_pois_inter)
         else:
-            obj_inter = ag_np.square(lambda_pois_inter - counts[~intramol_mask])
+            obj_inter = ag_np.square(lambda_pois_inter - counts[~mask_intra])
 
         if 'weight_equally' in mods:
             obj = ag_np.mean(obj_intra) + ag_np.mean(obj_inter)
@@ -125,27 +193,41 @@ def fit_alpha_obj(alphas, counts, dis, intramol_mask, use_poisson=False, mods=[]
 fit_alpha_grad = grad(fit_alpha_obj)
 
 
-def obj_wrap(alphas, counts, dis, intramol_mask, use_poisson=False, mods=[], verbose=True):
-    obj = fit_alpha_obj(alphas, counts=counts, dis=dis, intramol_mask=intramol_mask, use_poisson=use_poisson, mods=mods, verbose=verbose)
+def obj_wrap(alphas, counts, dis, mask_intra, use_poisson=False, mods=[], verbose=True):
+    obj = fit_alpha_obj(alphas, counts=counts, dis=dis, mask_intra=mask_intra, use_poisson=use_poisson, mods=mods, verbose=verbose)
     if not isinstance(obj, float) and obj.size > 1:
         obj = sum(obj)
     return obj * 1
 
 
-def grad_wrap(alphas, counts, dis, intramol_mask, use_poisson=False, mods=[], verbose=False):
-    return np.array(fit_alpha_obj(alphas, counts=counts, dis=dis, intramol_mask=intramol_mask, use_poisson=use_poisson, mods=mods)).ravel()
+def grad_wrap(alphas, counts, dis, mask_intra, use_poisson=False, mods=[], verbose=False):
+    return np.array(fit_alpha_obj(alphas, counts=counts, dis=dis, mask_intra=mask_intra, use_poisson=use_poisson, mods=mods)).ravel()
 
 
-def estimate_alpha(matrix_df, counts_col, dis_col='dis_mean', x0=None, bounds=(-6, -1), use_poisson=False, mods=[], seed=0, verbose=False):
+def estimate_alpha(matrix_df, counts_col, dis_col='dis_mean', x0=None, bounds=(-6, -1),
+                   use_poisson=False, mods=[], seed=0, max_iter=1e20, verbose=False):
+    if 'mask.sameC' in matrix_df.columns:
+        mask_intra_col = 'mask.sameC'
+    else:
+        mask_intra_col = 'mask.sameC-sameH'
+    if not (matrix_df[counts_col].astype(int) == matrix_df[counts_col]).all():
+        use_poisson = False  # Can't use Poisson-based obj for non-integer data
+
+    # Set up any specified modifications
     if mods is None:
         mods = []
     if isinstance(mods, str):
         mods = [mods]
+    if 'mask_intra' in mods:
+        matrix_df = matrix_df[matrix_df[mask_intra_col]]
+    if 'mask_inter' in mods:
+        matrix_df = matrix_df[~matrix_df[mask_intra_col]]
     if 'alpha_from_intra_only' in mods:
         num_alphas = 1
     else:
-        num_alphas = len(matrix_df['mask.sameC-sameH'].drop_duplicates())
+        num_alphas = len(matrix_df[mask_intra_col].drop_duplicates())
 
+    # Define initial value (x0) and bounds on X
     if x0 is None:
         rng = np.random.default_rng(seed=seed)
         x0 = rng.uniform(low=bounds[0], high=bounds[1], size=num_alphas)
@@ -154,27 +236,39 @@ def estimate_alpha(matrix_df, counts_col, dis_col='dis_mean', x0=None, bounds=(-
     x0 = np.asarray(x0)
     bounds = np.repeat(np.asarray(bounds).reshape(1, -1), num_alphas, axis=0)
 
+    # Build args
     counts = matrix_df[counts_col].values
-    args = [counts, matrix_df[dis_col].values, matrix_df['mask.sameC-sameH'].values, use_poisson, mods]
+    mask_intra = matrix_df[mask_intra_col].values
+    dis = matrix_df[dis_col].values
+    if isinstance(dis[0], (np.ndarray, list)):
+        dis = np.stack(dis.tolist())
+    args = [counts, dis, mask_intra, use_poisson, mods]
 
+    # Optimize
     if verbose:
         print("OPTIMIZING:", flush=True)
-    obj_wrap(x0, *args, verbose=2 if verbose else 0)
-    results = optimize.fmin_l_bfgs_b(
-        obj_wrap, x0=x0, fprime=grad_wrap, bounds=bounds, args=[*args, verbose],
-        factr=1e-60, maxls=10000, pgtol=1e-10) #, maxiter=max_iter, maxfun=max_fun, pgtol=pgtol, factr=factr)
-    X, obj, d = results
-    d['converged'] = d['warnflag'] == 0
-    conv_desc = d['task']
-    d['obj'] = obj
+    obj = obj_wrap(x0, *args, verbose=2 if verbose else 0)
+    if max_iter == 0:
+        X = x0
+        c = {'converged': 'N/A', 'obj': obj._value}
+    else:
+        results = optimize.fmin_l_bfgs_b(
+            obj_wrap, x0=x0, fprime=grad_wrap, bounds=bounds, args=[*args, verbose],
+            factr=1e-60, maxls=10000, pgtol=1e-10, maxiter=int(max_iter)) #, maxfun=max_fun, pgtol=pgtol, factr=factr)
+        X, obj, d = results
+        d['converged'] = d['warnflag'] == 0
+        conv_desc = d['task']
+        d['obj'] = obj.
     if X.size == 1:
         d['alphas'] = X[0]
     else:
         d['alphas'] = X
     d['beta'] = estimate_beta(X, *args)._value
+
     if verbose:
         print("\nRESULTS:", flush=True)
         print_alpha_infer_results(d)
+
     return d
 
 

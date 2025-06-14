@@ -15,6 +15,24 @@ from topsy.analysis.utils import get_nghbr_dis_var
 from estimate_alpha import estimate_alphas_from_true_dis
 
 
+def filter_matrix_df(matrix_df, mask):
+    """Convenience function for filtering by boolean column"""
+    if mask is None:
+        matrix_df = matrix_df
+    elif isinstance(mask, str):
+        mask_cols = [c for c in matrix_df.columns if np.issubdtype(
+            matrix_df[c].dtype, bool)]
+        if mask in mask_cols:
+            matrix_df = matrix_df[matrix_df[mask]]
+        elif f"~{mask}" in mask_cols:
+            matrix_df = matrix_df[~matrix_df[mask]]
+        else:
+            raise ValueError(f"{mask=} not understood")
+    else:
+        matrix_df = matrix_df[mask]
+    return matrix_df
+
+
 def prep_matrix_df(lengths_df, matrices, scale_dis_by='mean', nonmissing_bin_percentile=None):
     if set(list(matrices.keys())) != {'counts', 'nonmissing', 'dis_mean', 'dis_median'}:
         raise ValueError("Inputted matrices must contain: 'counts', 'nonmissing', 'dis_mean', 'dis_median'")
@@ -126,6 +144,55 @@ def filter_loci_by_cell_cov_percentile(lengths_df, percentile, verbose=True):
 #     return beta_ua
 
 
+def ambiguate_matrix_df(matrix_df, select_cols=None):
+    agg_func = {
+        'i.idx': 'count', 'nonmissing': 'sum', 'numerator': 'sum',
+        'genomic_dis': 'mean', 'counts': 'sum', 'counts_int': 'sum',
+        'dis_mean': lambda x: x.values.tolist(),
+        'dis_median': lambda x: x.values.tolist(),
+        'mask.nghbr': 'sum', 'mask.sameC-sameH': 'sum'}
+    agg_func = {k: v for k, v in agg_func.items() if k matrix_df.columns}
+    if select_cols is not None:
+        if isinstance(select_cols, str):
+            select_cols = [select_cols]
+        agg_func = {k: v for k, v in agg_func.items() if k in select_cols or k == 'i.idx'}
+
+    matrix_df_ambig = matrix_df.copy()
+
+    # Ambig index pair should fall within upper triangular of matrix
+    mask_swap = matrix_df['i.idx_ambig'] > matrix_df['j.idx_ambig']
+    for col in ('idx_ambig', 'idx_chrom', 'chrom'):
+        matrix_df_ambig.loc[mask_swap, f'i.{col}'] = matrix_df.loc[mask_swap, f'j.{col}']
+        matrix_df_ambig.loc[mask_swap, f'j.{col}'] = matrix_df.loc[mask_swap, f'i.{col}']
+    matrix_df_ambig = matrix_df_ambig[
+        matrix_df_ambig['i.idx_ambig'] != matrix_df_ambig['j.idx_ambig']]
+
+    # Ambiguate data for each column
+    matrix_df_ambig = matrix_df_ambig.groupby(
+        ['i.idx_ambig', 'j.idx_ambig', 'i.idx_chrom', 'j.idx_chrom', 'i.chrom', 'j.chrom']).agg(
+        agg_func).reset_index().sort_values(['i.idx_ambig', 'j.idx_ambig']).rename(
+        {'mask.sameC-sameH': 'mask.sameC', 'i.idx': 'nbins'}, axis=1, errors='ignore')
+    if 'mask.sameC' in matrix_df_ambig.columns:
+        matrix_df_ambig['mask.sameC'] = matrix_df_ambig['mask.sameC'].astype(bool)
+        matrix_df_ambig['mask.diffC'] = ~matrix_df_ambig['mask.sameC']
+    if 'mask.nghbr' in matrix_df_ambig.columns:
+        matrix_df_ambig['mask.nghbr'] = matrix_df_ambig['mask.nghbr'].astype(bool)
+    if 'dis_mean' in matrix_df_ambig.columns:
+        matrix_df_ambig['dis_mean'] = matrix_df_ambig['dis_mean'].apply(np.array)
+    if 'dis_median' in matrix_df_ambig.columns:
+        matrix_df_ambig['dis_median'] = matrix_df_ambig['dis_median'].apply(np.array)
+    matrix_df_ambig.index = list(map(
+        tuple, matrix_df_ambig[['i.idx_ambig', 'j.idx_ambig']].values.tolist()))
+
+    # Check that all data is present - 4 UA bins per ambig bin
+    missing_ua_data = matrix_df_ambig.nbins != 4
+    if missing_ua_data.any():
+        raise ValueError(f"Incomplete unambiguous data for {missing_ua_data.sum()}"
+                         f" locus pairs:\n{matrix_df_ambig[missing_ua_data]}")
+
+    return matrix_df_ambig
+
+
 def save_matrices(lengths_df, matrix_df, ambiguity='ua', alpha=None, beta=None,
                   dist_scale_factor=None, counts_col='counts_int', ploidy=2, outdir_counts=None):
     ambiguity = ambiguity.lower()
@@ -142,6 +209,7 @@ def save_matrices(lengths_df, matrix_df, ambiguity='ua', alpha=None, beta=None,
         np.savetxt(os.path.join(outdir_counts, "chromosomes.txt"), lengths_s.index.values, fmt="%s")
         lengths_df.columns = [f"#{c}" for c in lengths_df.columns]
         lengths_df.to_csv(os.path.join(outdir_counts, "counts.bed"), index=False, header=True, sep="\t")
+    n = lengths.sum()
 
     # Counts
     beta_counts = beta
@@ -149,7 +217,7 @@ def save_matrices(lengths_df, matrix_df, ambiguity='ua', alpha=None, beta=None,
     counts_dtype = {'counts_int': int, 'counts': float}
     if ambiguity == 'ua' or ploidy == 1:
         ua_ratio = 1
-        counts = np.zeros((lengths.sum() * ploidy, lengths.sum() * ploidy), dtype=counts_dtype)
+        counts = np.zeros((n * ploidy, n * ploidy), dtype=counts_dtype)
         counts[matrix_df['i.idx'], matrix_df['j.idx']] = matrix_df[counts_col]
     elif ambiguity == 'pa':
         pa_ratio = 1
@@ -157,9 +225,8 @@ def save_matrices(lengths_df, matrix_df, ambiguity='ua', alpha=None, beta=None,
         if beta is not None:
             beta_counts = None # divide/multiply (?) by 2...?
     else:
-        counts = np.zeros((lengths.sum(), lengths.sum()), dtype=counts_dtype)
-        matrix_df_ambig = matrix_df.groupby(
-            ['i.idx_ambig', 'j.idx_ambig'])[counts_col].sum().reset_index()
+        counts = np.zeros((n, n), dtype=counts_dtype)
+        matrix_df_ambig = ambiguate_matrix_df(matrix_df, select_cols='counts_int')
         counts[matrix_df_ambig['i.idx_ambig'], matrix_df_ambig['j.idx_ambig']] = matrix_df_ambig
     if outdir_counts is not None:
         write_counts(os.path.join(outdir_counts, f"{ambiguity}_counts.matrix"), counts)
@@ -167,8 +234,9 @@ def save_matrices(lengths_df, matrix_df, ambiguity='ua', alpha=None, beta=None,
     # Distances
     dis = {}
     for agg_func in ['mean', 'median']:
-        dis[agg_func] = np.zeros((lengths.sum() * ploidy, lengths.sum() * ploidy))
+        dis[agg_func] = np.zeros((n * ploidy, n * ploidy))
         dis[agg_func][matrix_df['i.idx'], matrix_df['j.idx']] = matrix_df[f'dis_{agg_func}']
+        dis[agg_func] += dis[agg_func].T  # Fill in lower triangular
         if outdir_counts is not None:
             np.save(os.path.join(outdir_counts, f"distances_true.{agg_func}.npy"), dis[agg_func])
 
@@ -269,7 +337,7 @@ def load_and_filter_data(input_file, min_percentile_loci_cov,
         nmol_per_hmlg_ratio=nmol_per_hmlg_ratio, spacing=spacing, name=name,
         contact_th=contact_th, verbose=False)
 
-    # Additional filtering of loci
+    # Additional filtering of loci by missingness across cells
     remove_loci = filter_loci_by_cell_cov_percentile(
         lengths_df, percentile=min_percentile_loci_cov, verbose=verbose)
     if remove_loci is not None:
@@ -284,7 +352,7 @@ def load_and_filter_data(input_file, min_percentile_loci_cov,
     return matrices, lengths_df, dir_matrix2d, name
 
 
-def save_dataset(input_file, nreads, outdir, min_percentile_loci_cov, ambiguity='ua',
+def save_dataset(input_file, outdir, min_percentile_loci_cov, nreads='auto', ambiguity='ua',
                  min_nonmissing_per_phased_locus=0.05, nmol_per_hmlg_ratio=1,
                  spacing=2.5, contact_th=0.75, redo=False, name=None, verbose=True):
 
@@ -295,41 +363,57 @@ def save_dataset(input_file, nreads, outdir, min_percentile_loci_cov, ambiguity=
         contact_th=contact_th, name=name, verbose=verbose)
     matrix_df, dist_scale_factor = prep_matrix_df(lengths_df, matrices=matrices)
 
-    if nreads is None or isinstance(nreads, str) and nreads.lower() == 'auto':
-        nreads = determine_max_nreads(matrix_df, verbose=verbose)
-    matrix_df = get_integer_counts(matrix_df, nreads=nreads)
+    # Get integer counts
+    if nreads is None:
+        counts_as_int = False
+        counts_col_for_matrix = 'counts'
+        desc_nreads = "non-integer"
+    else:
+        counts_as_int = True
+        counts_col_for_matrix = 'counts_int'
+        desc_nreads = f"nreads{nreads:.3g}".replace('e+0', 'e').replace('e+', 'e')
+        if isinstance(nreads, str) and nreads.lower() == 'auto':
+            nreads = determine_max_nreads(matrix_df, verbose=verbose)
+        matrix_df = get_integer_counts(matrix_df, nreads=nreads)
 
-    outdir_dataset = os.path.join(
-        outdir, "counts", "misc", f"{name}.nreads{nreads:.3g}".replace('e+0', 'e').replace('e+', 'e'))
-    outdir_counts = os.path.join(
-        outdir, "counts", ambiguity, f"{name}.nreads{nreads:.3g}".replace('e+0', 'e').replace('e+', 'e'))
+    # Get output directories
+    
+    outdirs = {
+        'ua': os.path.join(outdir, "unambig", f"{name}.{desc_nreads}"),
+        'ambig': os.path.join(outdir, "ambig", f"{name}.{desc_nreads}"),
+        'pa': os.path.join(outdir, "partial-ambig", f"{name}.{desc_nreads}"),
+        'dist': outdir_dataset = os.path.join(outdir, "distances", name)}
 
+    # Save single-cell distances and structural features
+    save_sc_data(
+        dir_matrix2d=dir_matrix2d, lengths_df=lengths_df, dist_scale_factor=dist_scale_factor,
+        outdir=outdirs['dist'], redo=False)
+
+    # Infer alpha
     if ambiguity != 'ua':
         raise NotImplementedError("Alpha inference for ambig/pa") # TODO
     if verbose:
         print("\nALPHA INFERENCE WITH 'TRUE' SINGLE-CELL DISTANCES:\n", flush=True)
     alpha_floatcounts, beta_floatcounts = estimate_alphas_from_true_dis(
-        matrix_df, use_poisson=False, integer_counts=False, dis_agg_func='mean', infer_alpha_mask=None,
+        matrix_df, use_poisson=False, integer_counts=False, ambiguity=ambiguity,
+        dis_agg_func='mean', infer_alpha_mask=None,
         infer_alpha_mods='beta_from_intra_only', plot=True,
-        outdir_fig=os.path.join(outdir_counts, 'images'), verbose=verbose)
+        outdir=outdirs['dist'], verbose=verbose)
     if verbose:
         print(flush=True)
     alpha_intcounts, beta_intcounts = estimate_alphas_from_true_dis(
-        matrix_df, use_poisson=True, integer_counts=True, dis_agg_func='mean', infer_alpha_mask=None,
+        matrix_df, use_poisson=True, integer_counts=True, ambiguity=ambiguity,
+        dis_agg_func='mean', infer_alpha_mask=None,
         infer_alpha_mods='beta_from_intra_only', plot=True,
-        outdir_fig=os.path.join(outdir_counts, 'images'), verbose=verbose)
+        outdir=outdirs[ambiguity], verbose=verbose)
 
-    # TODO save values for alpha/beta inferred from each method
     raise NotImplementedError("choose whether to use alpha from int/float counts (and update beta to match int counts if using alpha from float counts)") # TODO
 
+    # Save counts
     counts, dis, lengths = save_matrices(
         lengths_df, matrix_df=matrix_df, ambiguity=ambiguity, alpha=alpha, beta=beta,
-        dist_scale_factor=dist_scale_factor, counts_col='counts_int', outdir_counts=outdir_counts)
-
-    save_sc_data(
-        dir_matrix2d=dir_matrix2d, lengths_df=lengths_df, dist_scale_factor=dist_scale_factor,
-        outdir=outdir_dataset, redo=False)
-
+        dist_scale_factor=dist_scale_factor, counts_col=counts_col_for_matrix,
+        outdir_counts=outdirs[ambiguity])
 
     
 def main():
