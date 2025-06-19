@@ -10,9 +10,9 @@ from iced.io import write_counts, write_lengths
 from topsy.plot.plot_distances import plot_distance_matrix
 from topsy.plot.plot_counts import plot_counts_single
 from topsy.analysis.compare_distances import make_matrix_df, get_other_struct_features
-from topsy.analysis.compare_distances import load_sc_dis_per_locus, scale_sc_distances
+from topsy.analysis.compare_distances import load_sc_dis_per_locus
 from topsy.analysis.utils import get_nghbr_dis_var
-from estimate_alpha import estimate_alphas_from_true_dis
+from estimate_alpha import infer_alpha_float_vs_int
 
 
 def filter_matrix_df(matrix_df, mask):
@@ -151,7 +151,7 @@ def ambiguate_matrix_df(matrix_df, select_cols=None):
         'dis_mean': lambda x: x.values.tolist(),
         'dis_median': lambda x: x.values.tolist(),
         'mask.nghbr': 'sum', 'mask.sameC-sameH': 'sum'}
-    agg_func = {k: v for k, v in agg_func.items() if k matrix_df.columns}
+    agg_func = {k: v for k, v in agg_func.items() if k in matrix_df.columns}
     if select_cols is not None:
         if isinstance(select_cols, str):
             select_cols = [select_cols]
@@ -261,8 +261,8 @@ def save_matrices(lengths_df, matrix_df, ambiguity='ua', alpha=None, beta=None,
 
 
 def get_struct_features_of_sc_true(lengths_df, sc_dis_intramol, dist_scale_factor,
-                                   outfile=None, redo=False):
-    if os.path.exist(outfile) and not redo:
+                                   outfile=None, redo=False, verbose=True):
+    if os.path.isfile(outfile) and not redo:
         return pd.read_csv(outfile, index_col=0, sep='\t')
     
     if isinstance(sc_dis_intramol, str):
@@ -297,7 +297,7 @@ def get_struct_features_of_sc_true(lengths_df, sc_dis_intramol, dist_scale_facto
     return sc_other_feat
 
 
-def save_sc_data(dir_matrix2d, lengths_df, dist_scale_factor, outdir, redo=False):
+def save_sc_data(dir_matrix2d, lengths_df, dist_scale_factor, outdir, redo=False, verbose=True):
     sc_dis_file = glob.glob(os.path.join(dir_matrix2d, '*.distances.per_locus.tsv.gz'))
     sc_dis_intramol_file = glob.glob(os.path.join(dir_matrix2d, '*.distances.intramol.tsv.gz'))
     if len(sc_dis_file) != 1:
@@ -311,18 +311,20 @@ def save_sc_data(dir_matrix2d, lengths_df, dist_scale_factor, outdir, redo=False
     outfile_per_locus = os.path.join(outdir, 'distances_true.per_locus.tsv')
     outfile_features = os.path.join(outdir, 'features.struct_true.tsv')
     
-    if redo or not os.path.exist(outfile_per_locus):
+    if redo or not os.path.isfile(outfile_per_locus):
         sc_dis = load_sc_dis_per_locus(sc_dis_file, scale=False, verbose=verbose)
         for col in ['dis_mean', 'dis_med', 'dis']:
             sc_dis[col] /= dist_scale_factor
     
         sc_dis['dis'] = sc_dis.dis.apply(lambda x: x.tolist())
+        if verbose:
+            print("\tSaving scaled sc distances...", flush=True)
         sc_dis.to_csv(outfile, index=True, header=False, sep='\t')
 
-    if redo or not os.path.exist(outfile_features):
+    if redo or not os.path.isfile(outfile_features):
         get_struct_features_of_sc_true(
             lengths_df, sc_dis_intramol=sc_dis_intramol_file,
-            dist_scale_factor=dist_scale_factor, outfile=outfile_features, redo=redo)
+            dist_scale_factor=dist_scale_factor, outfile=outfile_features, redo=redo, verbose=verbose)
 
 
 def load_and_filter_data(input_file, min_percentile_loci_cov,
@@ -352,9 +354,10 @@ def load_and_filter_data(input_file, min_percentile_loci_cov,
     return matrices, lengths_df, dir_matrix2d, name
 
 
-def save_dataset(input_file, outdir, min_percentile_loci_cov, nreads='auto', ambiguity='ua',
-                 min_nonmissing_per_phased_locus=0.05, nmol_per_hmlg_ratio=1,
-                 spacing=2.5, contact_th=0.75, redo=False, name=None, verbose=True):
+def save_dataset(input_file, outdir, min_percentile_loci_cov=0.10, nreads=None, ambiguity='ua',
+                 infer_alpha_mods='beta_from_intra_only', infer_alpha_dis='mean', num_infer_alpha=10,
+                 redo=False, min_nonmissing_per_phased_locus=0.05, nmol_per_hmlg_ratio=1, spacing=2.5,
+                 contact_th=0.75, name=None, verbose=True):
 
     matrices, lengths_df, dir_matrix2d, name = load_and_filter_data(
         input_file, min_percentile_loci_cov=min_percentile_loci_cov,
@@ -364,50 +367,41 @@ def save_dataset(input_file, outdir, min_percentile_loci_cov, nreads='auto', amb
     matrix_df, dist_scale_factor = prep_matrix_df(lengths_df, matrices=matrices)
 
     # Get integer counts
-    if nreads is None:
+    if nreads is not None and isinstance(nreads, (int, float)) and nreads < 0:
         counts_as_int = False
         counts_col_for_matrix = 'counts'
         desc_nreads = "non-integer"
     else:
         counts_as_int = True
         counts_col_for_matrix = 'counts_int'
-        desc_nreads = f"nreads{nreads:.3g}".replace('e+0', 'e').replace('e+', 'e')
-        if isinstance(nreads, str) and nreads.lower() == 'auto':
+        if nreads is None or isinstance(nreads, str) and nreads.lower() == 'auto':
             nreads = determine_max_nreads(matrix_df, verbose=verbose)
         matrix_df = get_integer_counts(matrix_df, nreads=nreads)
+        nreads = matrix_df.counts_int.sum()  # Update with exact number of reads
+        desc_nreads = f"nreads{nreads:.3g}".replace('e+0', 'e').replace('e+', 'e')
 
     # Get output directories
-    
-    outdirs = {
-        'ua': os.path.join(outdir, "unambig", f"{name}.{desc_nreads}"),
-        'ambig': os.path.join(outdir, "ambig", f"{name}.{desc_nreads}"),
-        'pa': os.path.join(outdir, "partial-ambig", f"{name}.{desc_nreads}"),
-        'dist': outdir_dataset = os.path.join(outdir, "distances", name)}
+    if outdir is None:
+        outdirs = {'ua': None, 'ambig': None, 'pa': None, 'dist': None}
+        infer_alpha_outdir = None
+    else:
+        outdirs = {
+            'ua': os.path.join(outdir, "unambig", f"{name}.{desc_nreads}"),
+            'ambig': os.path.join(outdir, "ambig", f"{name}.{desc_nreads}"),
+            'pa': os.path.join(outdir, "partial-ambig", f"{name}.{desc_nreads}"),
+            'dist': os.path.join(outdir, "distances", name)}
+        infer_alpha_outdir = os.path.join(outdirs[ambiguity], "true_dis.alpha_infer")
 
     # Save single-cell distances and structural features
     save_sc_data(
         dir_matrix2d=dir_matrix2d, lengths_df=lengths_df, dist_scale_factor=dist_scale_factor,
-        outdir=outdirs['dist'], redo=False)
+        outdir=outdirs['dist'], redo=redo, verbose=verbose)
 
     # Infer alpha
-    if ambiguity != 'ua':
-        raise NotImplementedError("Alpha inference for ambig/pa") # TODO
-    if verbose:
-        print("\nALPHA INFERENCE WITH 'TRUE' SINGLE-CELL DISTANCES:\n", flush=True)
-    alpha_floatcounts, beta_floatcounts = estimate_alphas_from_true_dis(
-        matrix_df, use_poisson=False, integer_counts=False, ambiguity=ambiguity,
-        dis_agg_func='mean', infer_alpha_mask=None,
-        infer_alpha_mods='beta_from_intra_only', plot=True,
-        outdir=outdirs['dist'], verbose=verbose)
-    if verbose:
-        print(flush=True)
-    alpha_intcounts, beta_intcounts = estimate_alphas_from_true_dis(
-        matrix_df, use_poisson=True, integer_counts=True, ambiguity=ambiguity,
-        dis_agg_func='mean', infer_alpha_mask=None,
-        infer_alpha_mods='beta_from_intra_only', plot=True,
-        outdir=outdirs[ambiguity], verbose=verbose)
-
-    raise NotImplementedError("choose whether to use alpha from int/float counts (and update beta to match int counts if using alpha from float counts)") # TODO
+    alpha, beta, alpha_inf_results = infer_alpha_float_vs_int(
+        matrix_df, ambiguity=ambiguity, dis_agg_func=infer_alpha_dis, infer_alpha_mask=None,
+        infer_alpha_mods=infer_alpha_mods, plot=True, outdir=infer_alpha_outdir,
+        num_infer=num_infer_alpha, verbose=verbose)
 
     # Save counts
     counts, dis, lengths = save_matrices(
@@ -421,13 +415,25 @@ def main():
 
     parser = argparse.ArgumentParser()
     parser.add_argument("data", type=str)
+
+    # Preparing dataset
+    parser.add_argument("--outdir", type=str)
+    parser.add_argument("--min_percentile_loci_cov", default=0.10, type=float)
+    parser.add_argument("--nreads", default=None, type=float)
+    parser.add_argument("--ambiguity", default='ua', type=str)
+    parser.add_argument("--infer_alpha_mods", nargs='+', type=str)
+    parser.add_argument("--infer_alpha_dis", default='mean', type=str, choices=['mean', 'median'])
+    parser.add_argument("--num_infer_alpha", default=10, type=int)
+    parser.add_argument('--redo', default=False, action='store_true')
+
+    # Making consensus pseudo-counts from sc distances
     parser.add_argument("--spacing", default=2.5, type=float)
     parser.add_argument("--min_nonmissing_per_phased_locus", default=0.05, type=float)
     parser.add_argument("--nmol_per_hmlg_ratio", default=1, type=float)
-    parser.add_argument("--outdir", type=str)
     parser.add_argument("--name", type=str)
     parser.add_argument("--contact_th", default=0.75, type=float)
-    # parser.add_argument("--chrom", type=str, nargs='+')
+
+    # Verbosity
     parser.add_argument('--verbose', default=True, action='store_true')
     parser.add_argument('--silent', dest='verbose', default=True, action='store_false')
     args = parser.parse_args()
@@ -441,9 +447,12 @@ def main():
         nmol_per_hmlg_ratio = None
 
     save_dataset(
-        input_file=args.data, min_nonmissing_per_phased_locus=args.min_nonmissing_per_phased_locus,
-        nmol_per_hmlg_ratio=nmol_per_hmlg_ratio, spacing=args.spacing, outdir=args.outdir, name=name,
-        contact_th=args.contact_th, verbose=args.verbose)
+        input_file=args.data, outdir=args.outdir, min_percentile_loci_cov=args.min_percentile_loci_cov,
+        nreads=args.nreads, ambiguity=args.ambiguity, infer_alpha_mods=args.infer_alpha_mods,
+        infer_alpha_dis=args.infer_alpha_dis, num_infer_alpha=args.num_infer_alpha, redo=args.redo,
+        min_nonmissing_per_phased_locus=args.min_nonmissing_per_phased_locus,
+        nmol_per_hmlg_ratio=nmol_per_hmlg_ratio,  spacing=args.spacing,
+        contact_th=args.contact_th, name=name, verbose=args.verbose)
 
 
 if __name__ == "__main__":

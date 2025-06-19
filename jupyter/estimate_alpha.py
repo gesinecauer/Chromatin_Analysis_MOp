@@ -15,7 +15,14 @@ from topsy.analysis.compare_distances import make_matrix_df
 
 def infer_alpha_float_vs_int(matrix_df, ambiguity='ua', dis_agg_func='mean', infer_alpha_mask=None,
                              infer_alpha_mods=None, plot=True, outdir=None, num_infer=10, verbose=True):
-    from process_counts import filter_matrix_df
+    from process_counts import filter_matrix_df, ambiguate_matrix_df
+
+    if outdir is None:
+        outdir_fig = None
+        outfile = None
+    else:
+        outdir_fig = os.path.join(outdir, "images")
+        outfile = os.path.join(outdir, "true_distances.alpha_inference.tsv")  # FIXME
 
     # Prepare data
     if ambiguity.lower() == 'ambig':
@@ -33,7 +40,7 @@ def infer_alpha_float_vs_int(matrix_df, ambiguity='ua', dis_agg_func='mean', inf
         matrix_df, num_infer=num_infer, use_poisson=False, integer_counts=False,
         dis_agg_func=dis_agg_func, infer_alpha_mask=infer_alpha_mask,
         infer_alpha_mods=infer_alpha_mods, plot=plot,
-        outdir=outdir, verbose=False)
+        outdir_fig=outdir_fig, verbose=False)
     results.append({
         'desc': 'infer_alpha.non-integer.mse', 'alpha': alpha,
         'beta': beta, 'obj': obj})
@@ -43,10 +50,12 @@ def infer_alpha_float_vs_int(matrix_df, ambiguity='ua', dis_agg_func='mean', inf
         if verbose:
             print('\t' + results.to_string(index=False).replace('\n', '\t\n'),
                   flush=True)
+        if outfile is not None:
+            results.to_csv(outfile, sep='\t', index=False)
 
         return alpha, beta, results
 
-    # Get objective & beta for alpha obtained above alongside integer-counts
+    # Eval objective & estimate beta for integer-counts, using alpha obtained above 
     res = estimate_alpha(
         matrix_df, counts_col='counts_int', x0=alpha, use_poisson=True,
         mods=infer_alpha_mods, max_iter=0, verbose=False)
@@ -59,7 +68,7 @@ def infer_alpha_float_vs_int(matrix_df, ambiguity='ua', dis_agg_func='mean', inf
         matrix_df, num_infer=num_infer, use_poisson=True, integer_counts=True,
         dis_agg_func=dis_agg_func, infer_alpha_mask=infer_alpha_mask,
         infer_alpha_mods=infer_alpha_mods, plot=plot,
-        outdir=outdir, verbose=False)
+        outdir_fig=outdir_fig, verbose=False)
     results.append({
         'desc': 'infer_alpha.poisson', 'alpha': alpha, 'beta': beta,
         'obj': obj})
@@ -68,6 +77,8 @@ def infer_alpha_float_vs_int(matrix_df, ambiguity='ua', dis_agg_func='mean', inf
     if verbose:
         print('\t' + results.to_string(index=False).replace('\n', '\t\n'),
               flush=True)
+    if outfile is not None:
+        results.to_csv(outfile, sep='\t', index=False)
 
     tmp = results[results.desc.isin(['eval_at_alpha.poisson', 'infer_alpha.poisson'])]
     alpha, beta = tmp.loc[tmp.obj == tmp.obj.min(), ['alpha', 'beta']].values
@@ -113,8 +124,57 @@ def plot_counts_vs_dis(matrix_df, mask, alpha, counts_col, dis_col='dis_mean', b
 def estimate_alphas_from_true_dis(matrix_df, num_infer=10, use_poisson=True, integer_counts=True,
                                   dis_agg_func='mean', infer_alpha_mask=None, infer_alpha_mods=None,
                                   plot=True, outdir_fig=None, verbose=True):
-    
-    pass
+    from process_counts import filter_matrix_df
+
+    dis_col = f'dis_{dis_agg_func}'
+    if integer_counts:
+        counts_col = 'counts_int'
+        if verbose:
+            print(f"Inferring alpha from true {dis_agg_func} distances & integer"
+                  f" pseudo-counts (nreads={matrix_df[counts_col].sum()})", flush=True)
+    else:
+        counts_col = 'counts'
+        if verbose:
+            print(f"Inferring alpha from true {dis_agg_func} distances & original"
+                  " (non-integer) pseudo-counts", flush=True)
+
+    # Optinally mask data to be used for alpha inference
+    data = filter_matrix_df(matrix_df, mask=infer_alpha_mask)
+
+    results_per_infer = []
+    for seed in range(num_infer): # beta_from_intra_only, alpha_from_intra_only
+        results_per_infer.append(estimate_alpha(
+            data, counts_col=counts_col, seed=seed, use_poisson=use_poisson,
+            mods=infer_alpha_mods))
+    results_per_infer = pd.DataFrame(results_per_infer)
+    results_per_infer = results_per_infer[results_per_infer.converged]
+    if len(results_per_infer) == 0:
+        raise ValueError(f"None of the optimizations to infer alpha converged.")
+    results_best = list(
+        results_per_infer[results_per_infer.obj == results_per_infer.obj.min()].T.to_dict().values())[0]
+    if verbose:
+        print_alpha_infer_results(results_best)
+
+    alpha_ = results_best['alphas']
+    alpha_intra_, alpha_inter_ = np.tile(alpha_, int(2 / np.array(alpha_, ndmin=1).size))
+    beta_ = results_best['beta']
+
+    if plot:
+        outfile_intra = outfile_inter = None
+        if outdir_fig is not None:
+            tmp = f"alpha_infer.dis-{dis_agg_func}_vs_{counts_col.replace('_', '-')}"
+            outfile_intra = os.path.join(outdir_fig, f"{tmp}.intra-mol.png")
+            outfile_inter = os.path.join(outdir_fig, f"{tmp}.inter-mol.png")
+        plot_counts_vs_dis(
+            matrix_df, mask=~matrix_df['mask.diffM'], counts_col=counts_col, alpha=alpha_intra_,
+            beta=beta_, title=f"INTRA-molecular\nα={alpha_intra_:.3g}, β={beta_:.3g}",
+            outfile=outfile_intra)
+        plot_counts_vs_dis(
+            matrix_df, mask=matrix_df['mask.diffM'], counts_col=counts_col, alpha=alpha_inter_,
+            beta=beta_, title=f"Inter-molecular\nα={alpha_inter_:.3g}, β={beta_:.3g}",
+            outfile=outfile_inter)
+
+    return alpha_, beta_, results_best['obj']
 
 
 # ===================================================================================================================
@@ -258,7 +318,7 @@ def estimate_alpha(matrix_df, counts_col, dis_col='dis_mean', x0=None, bounds=(-
         X, obj, d = results
         d['converged'] = d['warnflag'] == 0
         conv_desc = d['task']
-        d['obj'] = obj.
+        d['obj'] = obj
     if X.size == 1:
         d['alphas'] = X[0]
     else:
