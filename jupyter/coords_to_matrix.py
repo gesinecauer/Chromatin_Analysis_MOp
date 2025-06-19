@@ -61,23 +61,29 @@ def save_sc_dis_per_locus(sc_dist_vec, idx, outfile, lengths_df):
     matrix_idx = list(map(tuple, np.stack([row, col], axis=1).tolist()))
 
     df = pd.DataFrame(data={'dis': sc_dist_vec[~np.isnan(sc_dist_vec)]}, index=matrix_idx)
-    # df.to_csv(outfile, header=False)
 
     df = df.groupby(level=0).apply(
         lambda x: x.dis.values.tolist(), include_groups=False).reset_index(level=0).rename(
-        {0: 'dis'}, axis=1)
+        {0: 'dis', 'index': 'idx'}, axis=1).set_index('idx')
 
     matrix_df = make_matrix_df(lengths_df)
     sameM = (~matrix_df[['mask.diffM']]).rename({'mask.diffM': 'same_molecule'}, axis=1).astype(int)
+
+    idx_mismatch = ~df.index.isin(matrix_df.index)
+    if idx_mismatch.any():
+        print(f"{len(df)=}, {len(matrix_df)=}, {idx_mismatch.sum()=}", flush=True)
+        print(matrix_df.head().index, flush=True)
+        print(df.head().index, flush=True)
+        raise ValueError(f"Index mismatch!! {len(df)=}, {len(matrix_df)=}\n{idx_mismatch.sum()} indices in df but not in matrix_df:\n{idx_mismatch[idx_mismatch].index}")
     
     df = df.join(sameM).reset_index().rename({'index': 'idx'}, axis=1).sort_values(
         ['same_molecule', 'idx'], ascending=[False, True])
-    # df = df[['idx', 'same_molecule', 'dis']]
 
     df['dis_mean'] = df.dis.apply(np.mean)
     df['dis_med'] = df.dis.apply(np.median)
 
     df = df[['idx', 'same_molecule', 'dis_mean', 'dis_med', 'dis']]
+    print('                 ...saving single-cell distances per locus', flush=True)
     df.to_csv(outfile, index=False, header=False, sep='\t')
 
 
@@ -99,6 +105,7 @@ def process_sc_distances(sc_dna_coords, idx, outdir, lengths_df, contact_th=0.75
     sc_dist_intramol_file = os.path.join(outdir, f'{name}distances.intramol.tsv.gz')
 
     print(f"Counts: {mean_counts_matrix_file}", flush=True)
+    
     
     all_files = [sc_dist_vec_file, median_dist_matrix_file, mean_dist_matrix_file, mean_counts_matrix_file,
                 nonmissing_per_locus_pair_file, sc_dist_per_locus_file, sc_dist_intramol_file]
@@ -150,10 +157,10 @@ def process_sc_distances(sc_dna_coords, idx, outdir, lengths_df, contact_th=0.75
             np.save(nonmissing_per_locus_pair_file, nonmissing_per_locus_pair)
     else:
         mean_counts_matrix = np.load(mean_counts_matrix_file)
-        nonmissing_per_locus_pair = np.load(nonmissing_per_locus_pair_file, dtype=int)
+        nonmissing_per_locus_pair = np.load(nonmissing_per_locus_pair_file).astype(int)
 
     if redo or not os.path.exists(sc_dist_per_locus_file):
-        print('Saving single-cell distances per locus...', flush=True)
+        print('Get single-cell distances per locus...', flush=True)
         save_sc_dis_per_locus(sc_dist_vec, idx=idx, outfile=sc_dist_per_locus_file, lengths_df=lengths_df)
 
     if redo or not os.path.exists(sc_dist_intramol_file):
