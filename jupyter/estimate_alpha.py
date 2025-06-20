@@ -32,7 +32,7 @@ def infer_alpha_float_vs_int(matrix_df, ambiguity='ua', dis_agg_func='mean', inf
     matrix_df = filter_matrix_df(matrix_df, mask=infer_alpha_mask)
 
     if verbose:
-        print("ALPHA INFERENCE WITH 'TRUE' SINGLE-CELL DISTANCES:", flush=True)
+        print("\nALPHA INFERENCE WITH 'TRUE' SINGLE-CELL DISTANCES:", flush=True)
     results = []
 
     # Infer alpha with float-counts
@@ -41,15 +41,15 @@ def infer_alpha_float_vs_int(matrix_df, ambiguity='ua', dis_agg_func='mean', inf
         dis_agg_func=dis_agg_func, infer_alpha_mask=infer_alpha_mask,
         infer_alpha_mods=infer_alpha_mods, plot=plot,
         outdir_fig=outdir_fig, verbose=False)
+    alpha_intra, alpha_inter = np.tile(alpha, int(2 / np.array(alpha, ndmin=1).size))
     results.append({
-        'desc': 'infer_alpha.non-integer.mse', 'alpha': alpha,
-        'beta': beta, 'obj': obj})
+        'desc': 'infer_alpha.non-integer.mse', 'obj': obj, 'beta': beta,
+        'alpha_intra': alpha_intra, 'alpha_inter': alpha_inter})
 
     if 'counts_int' not in matrix_df.columns:
         results = pd.DataFrame(results)
         if verbose:
-            print('\t' + results.to_string(index=False).replace('\n', '\t\n'),
-                  flush=True)
+            print(results.to_string(index=False), flush=True)
         if outfile is not None:
             results.to_csv(outfile, sep='\t', index=False)
 
@@ -59,9 +59,10 @@ def infer_alpha_float_vs_int(matrix_df, ambiguity='ua', dis_agg_func='mean', inf
     res = estimate_alpha(
         matrix_df, counts_col='counts_int', x0=alpha, use_poisson=True,
         mods=infer_alpha_mods, max_iter=0, verbose=False)
+    alpha_intra, alpha_inter = np.tile(res['alphas'], int(2 / np.array(res['alphas'], ndmin=1).size))
     results.append({
-        'desc': 'eval_at_alpha.poisson', 'alpha': alpha,
-        'beta': res['beta'], 'obj': res['obj']})
+        'desc': 'eval_at_alpha.poisson', 'obj': res['obj'], 'beta': res['beta'],
+        'alpha_intra': alpha_intra, 'alpha_inter': alpha_inter})
 
     # Infer alpha with integer-counts, with designated nreads
     alpha, beta, obj = estimate_alphas_from_true_dis(
@@ -69,21 +70,22 @@ def infer_alpha_float_vs_int(matrix_df, ambiguity='ua', dis_agg_func='mean', inf
         dis_agg_func=dis_agg_func, infer_alpha_mask=infer_alpha_mask,
         infer_alpha_mods=infer_alpha_mods, plot=plot,
         outdir_fig=outdir_fig, verbose=False)
+    alpha_intra, alpha_inter = np.tile(alpha, int(2 / np.array(alpha, ndmin=1).size))
     results.append({
-        'desc': 'infer_alpha.poisson', 'alpha': alpha, 'beta': beta,
-        'obj': obj})
+        'desc': 'infer_alpha.poisson', 'obj': obj, 'beta': beta,
+        'alpha_intra': alpha_intra, 'alpha_inter': alpha_inter})
 
     results = pd.DataFrame(results)
     if verbose:
-        print('\t' + results.to_string(index=False).replace('\n', '\t\n'),
-              flush=True)
+        print(results.to_string(index=False), flush=True)
     if outfile is not None:
         results.to_csv(outfile, sep='\t', index=False)
 
     tmp = results[results.desc.isin(['eval_at_alpha.poisson', 'infer_alpha.poisson'])]
-    alpha, beta = tmp.loc[tmp.obj == tmp.obj.min(), ['alpha', 'beta']].values
+    alpha_intra, alpha_inter, beta = tmp.loc[
+        tmp.obj == tmp.obj.min(), ['alpha_intra', 'alpha_inter', 'beta']].values.ravel().tolist()
 
-    return alpha, beta, results
+    return alpha_intra, alpha_inter, beta, results
 
 
 
@@ -310,7 +312,7 @@ def estimate_alpha(matrix_df, counts_col, dis_col='dis_mean', x0=None, bounds=(-
     obj = obj_wrap(x0, *args, verbose=2 if verbose else 0)
     if max_iter == 0:
         X = x0
-        c = {'converged': 'N/A', 'obj': obj._value}
+        d = {'converged': 'N/A', 'obj': obj._value}
     else:
         results = optimize.fmin_l_bfgs_b(
             obj_wrap, x0=x0, fprime=grad_wrap, bounds=bounds, args=[*args, verbose],
@@ -323,7 +325,8 @@ def estimate_alpha(matrix_df, counts_col, dis_col='dis_mean', x0=None, bounds=(-
         d['alphas'] = X[0]
     else:
         d['alphas'] = X
-    d['beta'] = estimate_beta(X, *args)._value
+    d['beta'] = float(estimate_beta(X, *args)._value)
+    
 
     if verbose:
         print("\nRESULTS:", flush=True)

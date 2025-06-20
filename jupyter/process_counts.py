@@ -214,7 +214,7 @@ def save_matrices(lengths_df, matrix_df, ambiguity='ua', alpha=None, beta=None,
     # Counts
     beta_counts = beta
     ua_ratio = pa_ratio = 0
-    counts_dtype = {'counts_int': int, 'counts': float}
+    counts_dtype = {'counts_int': int, 'counts': float}[counts_col]
     if ambiguity == 'ua' or ploidy == 1:
         ua_ratio = 1
         counts = np.zeros((n * ploidy, n * ploidy), dtype=counts_dtype)
@@ -243,14 +243,24 @@ def save_matrices(lengths_df, matrix_df, ambiguity='ua', alpha=None, beta=None,
     # Metadata
     if outdir_counts is not None:        
         dataset_info = pd.Series({
-            'ploidy': 2, 'nreads': counts_int.sum(), 'ua': ua_ratio, 'pa': pa_ratio, 'lengths': lengths_s.values,
-            'beta': beta, f'beta_{ambiguity}': beta_counts, 'alpha': alpha, 'dist_scale_factor': dist_scale_factor})
+            'ploidy': 2, 'ua': ua_ratio, 'pa': pa_ratio, 'lengths': lengths_s.values, 'beta': beta,
+            f'beta_{ambiguity}': beta_counts, 'alpha': alpha, 'dist_scale_factor': dist_scale_factor})
+        if counts_col == 'counts_int':
+            dataset_info['nreads'] = counts.sum()
+        if isinstance(alpha, (float, int)):
+            dataset_info['alpha'] = alpha
+        elif isinstance(alpha, (dict, pd.Series)):
+            if isinstance(alpha, dict):
+                alpha = pd.Series(alpha)
+            dataset_info = pd.concat([dataset_info, alpha])
+        else:
+            raise ValueError("Alpha not understood: {alpha}")
         dataset_info.to_csv(os.path.join(outdir_counts, "dataset_info.txt"), sep="\t", header=False)
 
     # Plot counts & distances
     if outdir_counts is not None:
         plot_counts_single(
-            counts_int, lengths=lengths, title="Pseudo-counts, unambiguous",
+            counts, lengths=lengths, title="Pseudo-counts, unambiguous",
             outfile=os.path.join(outdir_counts, "images", "ua_counts.png"), mark_excluded=True)
         for agg_func in ['mean', 'median']:
             plot_distance_matrix(
@@ -266,6 +276,8 @@ def get_struct_features_of_sc_true(lengths_df, sc_dis_intramol, dist_scale_facto
         return pd.read_csv(outfile, index_col=0, sep='\t')
     
     if isinstance(sc_dis_intramol, str):
+        if verbose:
+            print("Loading intra-molecular sc distances...", flush=True)
         sc_dis_intramol = pd.read_csv(
             sc_dis_intramol, sep='\t', header=None, index_col=0,
             converters={0: ast.literal_eval})
@@ -306,11 +318,15 @@ def save_sc_data(dir_matrix2d, lengths_df, dist_scale_factor, outdir, redo=False
         raise ValueError("Couldn't find unique file for intra-mol single cell distances")
     sc_dis_file = sc_dis_file[0]
     sc_dis_intramol_file = sc_dis_intramol_file[0]
-    
+
     os.makedirs(outdir, exist_ok=True)
     outfile_per_locus = os.path.join(outdir, 'distances_true.per_locus.tsv')
     outfile_features = os.path.join(outdir, 'features.struct_true.tsv')
-    
+
+    if verbose and (redo or not os.path.isfile(
+            outfile_per_locus) or not os.path.isfile(outfile_features)):
+        print("\nSAVING SINGLE-CELL DISTANCE DATA:", flush=True)
+
     if redo or not os.path.isfile(outfile_per_locus):
         sc_dis = load_sc_dis_per_locus(sc_dis_file, scale=False, verbose=verbose)
         for col in ['dis_mean', 'dis_med', 'dis']:
@@ -319,7 +335,7 @@ def save_sc_data(dir_matrix2d, lengths_df, dist_scale_factor, outdir, redo=False
         sc_dis['dis'] = sc_dis.dis.apply(lambda x: x.tolist())
         if verbose:
             print("\tSaving scaled sc distances...", flush=True)
-        sc_dis.to_csv(outfile, index=True, header=False, sep='\t')
+        sc_dis.to_csv(outfile_per_locus, index=True, header=False, sep='\t')
 
     if redo or not os.path.isfile(outfile_features):
         get_struct_features_of_sc_true(
@@ -340,6 +356,8 @@ def load_and_filter_data(input_file, min_percentile_loci_cov,
         contact_th=contact_th, verbose=False)
 
     # Additional filtering of loci by missingness across cells
+    if verbose and min_percentile_loci_cov > 0:
+        print(f"\nREMOVING LOCI PRESENT IN <{min_percentile_loci_cov * 100:.3g}% OF CELLS:", flush=True)
     remove_loci = filter_loci_by_cell_cov_percentile(
         lengths_df, percentile=min_percentile_loci_cov, verbose=verbose)
     if remove_loci is not None:
@@ -372,6 +390,8 @@ def save_dataset(input_file, outdir, min_percentile_loci_cov=0.10, nreads=None, 
         counts_col_for_matrix = 'counts'
         desc_nreads = "non-integer"
     else:
+        if verbose:
+            print("\nCONVERTING COUNTS TO INTEGERS:", flush=True)
         counts_as_int = True
         counts_col_for_matrix = 'counts_int'
         if nreads is None or isinstance(nreads, str) and nreads.lower() == 'auto':
@@ -398,15 +418,16 @@ def save_dataset(input_file, outdir, min_percentile_loci_cov=0.10, nreads=None, 
         outdir=outdirs['dist'], redo=redo, verbose=verbose)
 
     # Infer alpha
-    alpha, beta, alpha_inf_results = infer_alpha_float_vs_int(
+    alpha_intra, alpha_inter, beta, alpha_inf_results = infer_alpha_float_vs_int(
         matrix_df, ambiguity=ambiguity, dis_agg_func=infer_alpha_dis, infer_alpha_mask=None,
         infer_alpha_mods=infer_alpha_mods, plot=True, outdir=infer_alpha_outdir,
         num_infer=num_infer_alpha, verbose=verbose)
 
     # Save counts
     counts, dis, lengths = save_matrices(
-        lengths_df, matrix_df=matrix_df, ambiguity=ambiguity, alpha=alpha, beta=beta,
-        dist_scale_factor=dist_scale_factor, counts_col=counts_col_for_matrix,
+        lengths_df, matrix_df=matrix_df, ambiguity=ambiguity,
+        alpha={'alpha': alpha_intra, 'alpha_intra': alpha_intra, 'alpha_inter': alpha_inter},
+        beta=beta, dist_scale_factor=dist_scale_factor, counts_col=counts_col_for_matrix,
         outdir_counts=outdirs[ambiguity])
 
     
