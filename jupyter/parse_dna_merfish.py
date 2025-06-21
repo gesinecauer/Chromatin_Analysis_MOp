@@ -497,6 +497,17 @@ def restrict_to_equal_nmol_per_hmlg(data, cell_desc_file=None, cutoff_ratio=1, v
         ['chrom', 'ntraces_in_cell', 'nloci_per_cell', 'nloci_2trace'], ascending=False).reset_index(drop=True)
     df_cell_desc['labeling_order'] = df_cell_desc.groupby('chrom').apply(lambda x: pd.Series(
         np.arange(1, len(x) + 1), index=x.index), include_groups=False).reset_index(level=0, drop=True).sort_index()
+    # Ensure dtypes match up between cell description and sc data
+    if np.issubdtype(df.chrom.dtype, int) or np.issubdtype(df.chrom.dtype, float) and not (
+            np.issubdtype(df_cell_desc.chrom.dtype, int) or np.issubdtype(df_cell_desc.chrom.dtype, float)):
+        df_cell_desc = df_cell_desc[df_cell_desc.chrom.isin(df.chrom.drop_duplicates().astype(str))]
+        try:
+            df_cell_desc['chrom'] = pd.to_numeric(df_cell_desc.chrom)  # Try to make numeric
+        except ValueError:
+            pass
+        if not (np.issubdtype(df_cell_desc.chrom.dtype, int) or np.issubdtype(df_cell_desc.chrom.dtype, float)):
+            df['chrom'] = df.chrom.astype(str)
+    # Merge data
     df = df.merge(df_cell_desc[['cell_id', 'chrom', 'labeling_order']], on=['cell_id', 'chrom'], how='left')
 
     # For each chromosome, get the minimum number of cells detected across the two homologs
@@ -504,7 +515,7 @@ def restrict_to_equal_nmol_per_hmlg(data, cell_desc_file=None, cutoff_ratio=1, v
         ['chrom', 'hmlg']).size().reset_index(level=1).groupby(level=0).min().reset_index().rename(
         {0: 'min_nmol'}, axis=1).drop('hmlg', axis=1)
     df = df.merge(min_ncell_per_hmlg, on='chrom', how='left')
-    
+
     df = df[df.labeling_order <= df.min_nmol * cutoff_ratio]
 
     if verbose:

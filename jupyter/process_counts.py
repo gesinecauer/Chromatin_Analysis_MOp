@@ -12,6 +12,7 @@ from topsy.plot.plot_counts import plot_counts_single
 from topsy.analysis.compare_distances import make_matrix_df, get_other_struct_features
 from topsy.analysis.compare_distances import load_sc_dis_per_locus
 from topsy.analysis.utils import get_nghbr_dis_var
+from topsy.utils.misc import symlink
 from estimate_alpha import infer_alpha_float_vs_int
 
 
@@ -238,13 +239,13 @@ def save_matrices(lengths_df, matrix_df, ambiguity='ua', alpha=None, beta=None,
         dis[agg_func][matrix_df['i.idx'], matrix_df['j.idx']] = matrix_df[f'dis_{agg_func}']
         dis[agg_func] += dis[agg_func].T  # Fill in lower triangular
         if outdir_counts is not None:
-            np.save(os.path.join(outdir_counts, f"distances_true.{agg_func}.npy"), dis[agg_func])
+            np.save(os.path.join(outdir_counts, f"struct_true.distances.{agg_func}.npy"), dis[agg_func])
 
     # Metadata
     if outdir_counts is not None:        
         dataset_info = pd.Series({
             'ploidy': 2, 'ua': ua_ratio, 'pa': pa_ratio, 'lengths': lengths_s.values, 'beta': beta,
-            f'beta_{ambiguity}': beta_counts, 'alpha': alpha, 'dist_scale_factor': dist_scale_factor})
+            f'beta_{ambiguity}': beta_counts, 'dist_scale_factor': dist_scale_factor})
         if counts_col == 'counts_int':
             dataset_info['nreads'] = counts.sum()
         if isinstance(alpha, (float, int)):
@@ -254,7 +255,7 @@ def save_matrices(lengths_df, matrix_df, ambiguity='ua', alpha=None, beta=None,
                 alpha = pd.Series(alpha)
             dataset_info = pd.concat([dataset_info, alpha])
         else:
-            raise ValueError("Alpha not understood: {alpha}")
+            raise ValueError(f"Alpha not understood: {alpha}")
         dataset_info.to_csv(os.path.join(outdir_counts, "dataset_info.txt"), sep="\t", header=False)
 
     # Plot counts & distances
@@ -265,7 +266,7 @@ def save_matrices(lengths_df, matrix_df, ambiguity='ua', alpha=None, beta=None,
         for agg_func in ['mean', 'median']:
             plot_distance_matrix(
                 dis[agg_func], lengths=lengths, ploidy=2, title=f"'True' distances\n{agg_func} across cells",
-                outfile=os.path.join(outdir_counts, "images", f"distances_true.{agg_func}.png"))
+                outfile=os.path.join(outdir_counts, "images", f"struct_true.distances.{agg_func}.png"))
     
     return counts, dis, lengths
 
@@ -320,11 +321,14 @@ def save_sc_data(dir_matrix2d, lengths_df, dist_scale_factor, outdir, redo=False
     sc_dis_intramol_file = sc_dis_intramol_file[0]
 
     os.makedirs(outdir, exist_ok=True)
-    outfile_per_locus = os.path.join(outdir, 'distances_true.per_locus.tsv')
-    outfile_features = os.path.join(outdir, 'features.struct_true.tsv')
+    outfile_per_locus = os.path.join(outdir, 'struct_true.distances.per_locus.tsv')
+    outfile_features = os.path.join(outdir, 'struct_true.features.tsv')
 
-    if verbose and (redo or not os.path.isfile(
-            outfile_per_locus) or not os.path.isfile(outfile_features)):
+    if (not redo) and os.path.isfile(outfile_per_locus) and os.path.isfile(
+            outfile_features):
+        return outfile_per_locus, outfile_features
+
+    if verbose:
         print("\nSAVING SINGLE-CELL DISTANCE DATA:", flush=True)
 
     if redo or not os.path.isfile(outfile_per_locus):
@@ -341,6 +345,8 @@ def save_sc_data(dir_matrix2d, lengths_df, dist_scale_factor, outdir, redo=False
         get_struct_features_of_sc_true(
             lengths_df, sc_dis_intramol=sc_dis_intramol_file,
             dist_scale_factor=dist_scale_factor, outfile=outfile_features, redo=redo, verbose=verbose)
+
+    return outfile_per_locus, outfile_features
 
 
 def load_and_filter_data(input_file, min_percentile_loci_cov,
@@ -410,12 +416,17 @@ def save_dataset(input_file, outdir, min_percentile_loci_cov=0.10, nreads=None, 
             'ambig': os.path.join(outdir, "ambig", f"{name}.{desc_nreads}"),
             'pa': os.path.join(outdir, "partial-ambig", f"{name}.{desc_nreads}"),
             'dist': os.path.join(outdir, "distances", name)}
-        infer_alpha_outdir = os.path.join(outdirs[ambiguity], "true_dis.alpha_infer")
+        infer_alpha_outdir = os.path.join(outdirs[ambiguity], "struct_true.infer_alpha_from_dis")
+        os.makedirs(infer_alpha_outdir, exist_ok=True)
+        os.makedirs(outdirs['dist'], exist_ok=True)
 
     # Save single-cell distances and structural features
-    save_sc_data(
-        dir_matrix2d=dir_matrix2d, lengths_df=lengths_df, dist_scale_factor=dist_scale_factor,
-        outdir=outdirs['dist'], redo=redo, verbose=verbose)
+    if outdir is not None:
+        outfile_per_locus, outfile_features = save_sc_data(
+            dir_matrix2d=dir_matrix2d, lengths_df=lengths_df, dist_scale_factor=dist_scale_factor,
+            outdir=outdirs['dist'], redo=redo, verbose=verbose)
+        symlink(source=outfile_per_locus, dest=os.path.join(outdirs[ambiguity], os.path.basename(outfile_per_locus)))
+        symlink(source=outfile_features, dest=os.path.join(outdirs[ambiguity], os.path.basename(outfile_features)))
 
     # Infer alpha
     alpha_intra, alpha_inter, beta, alpha_inf_results = infer_alpha_float_vs_int(

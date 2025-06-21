@@ -10,7 +10,6 @@ import jax.numpy as ag_np
 from jax import grad
 from scipy import optimize
 from pastis.optimization.likelihoods import poisson_nll
-from topsy.analysis.compare_distances import make_matrix_df
 
 
 def infer_alpha_float_vs_int(matrix_df, ambiguity='ua', dis_agg_func='mean', infer_alpha_mask=None,

@@ -240,6 +240,7 @@ def process_sc_dna_coords(input_file, outdir=None, min_nonmissing_per_phased_loc
     df.sort_values(['idx', 'cell_id'], inplace=True)
     df.to_csv(outfile_df, index=False)
     idx = df.idx.drop_duplicates().sort_values().values
+    print(df[df.duplicated(subset=['idx', 'cell_id'], keep=False)]) # *** TODO remove
     df.set_index(['idx', 'cell_id'], inplace=True)
     df = df[['hmlg', 'chrom', 'idx_chrom', 'idx_genome', 'x', 'y', 'z']]
     sc_dna_coords = np.stack([df[[c]].unstack(level=0).values for c in ['x', 'y', 'z']], axis=2)
