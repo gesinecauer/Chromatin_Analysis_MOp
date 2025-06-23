@@ -379,10 +379,10 @@ def label_homologs_for_chrom(df, df_cell_desc, chrom, compare_to_labeled_loci_wi
         if root_mse or nrmse_method is not None:
             res = [np.sqrt(x) for x in res]
 
-        # Only proceed to labeling homologs if we have similarity scores for all candidate traces
+        # Only proceed to labeling the homologs if we have similarity scores for all candidate traces
         if len(res) != ntraces_per_cell:
             ntraces_per_prev_cell = ntraces_per_cell  # Keep track of prev cell's info
-            continue
+            continue  # The homologs of the given chrom can't be labeled for the this cell (will remain NaN)
             
         # Indices that determine how the candidate cell's trace(s) get paired to the pre-labled hmlgs
         pairingA = np.arange(ntraces_per_cell) + 1  # Pair trace1 to hmlg1 (and trace2 to hmlg2)
@@ -488,6 +488,10 @@ def restrict_to_equal_nmol_per_hmlg(data, cell_desc_file=None, cutoff_ratio=1, v
         df = data
         if cell_desc_file is None:
             raise ValueError("Must input cell_desc_file.")
+
+    # Remove homologs that were not able to be labeled (due to insufficient loci in common with pre-labeled data)
+    df = df[~df.hmlg.isnull()]
+
     if cutoff_ratio is None:
         return df
     nrows_orig = len(df)
