@@ -35,15 +35,16 @@ def infer_alpha_float_vs_int(matrix_df, ambiguity='ua', dis_agg_func='mean', inf
     results = []
 
     # Infer alpha with float-counts
-    alpha, beta, obj = estimate_alphas_from_true_dis(
-        matrix_df, num_infer=num_infer, use_poisson=False, integer_counts=False,
-        dis_agg_func=dis_agg_func, infer_alpha_mask=infer_alpha_mask,
-        infer_alpha_mods=infer_alpha_mods, plot=plot,
-        outdir_fig=outdir_fig, verbose=False)
-    alpha_intra, alpha_inter = np.tile(alpha, int(2 / np.array(alpha, ndmin=1).size))
-    results.append({
-        'desc': 'infer_alpha.non-integer.mse', 'obj': obj, 'beta': beta,
-        'alpha_intra': alpha_intra, 'alpha_inter': alpha_inter})
+    if 'counts' in matrix_df.columns:
+        alpha, beta, obj = estimate_alphas_from_true_dis(
+            matrix_df, num_infer=num_infer, use_poisson=False, integer_counts=False,
+            dis_agg_func=dis_agg_func, infer_alpha_mask=infer_alpha_mask,
+            infer_alpha_mods=infer_alpha_mods, plot=plot,
+            outdir_fig=outdir_fig, verbose=False)
+        alpha_intra, alpha_inter = np.tile(alpha, int(2 / np.array(alpha, ndmin=1).size))
+        results.append({
+            'desc': 'infer_alpha.non-integer.mse', 'obj': obj, 'beta': beta,
+            'alpha_intra': alpha_intra, 'alpha_inter': alpha_inter})
 
     if 'counts_int' not in matrix_df.columns:
         results = pd.DataFrame(results)
@@ -55,13 +56,14 @@ def infer_alpha_float_vs_int(matrix_df, ambiguity='ua', dis_agg_func='mean', inf
         return alpha, beta, results
 
     # Eval objective & estimate beta for integer-counts, using alpha obtained above 
-    res = estimate_alpha(
-        matrix_df, counts_col='counts_int', x0=alpha, use_poisson=True,
-        mods=infer_alpha_mods, max_iter=0, verbose=False)
-    alpha_intra, alpha_inter = np.tile(res['alphas'], int(2 / np.array(res['alphas'], ndmin=1).size))
-    results.append({
-        'desc': 'eval_at_alpha.poisson', 'obj': res['obj'], 'beta': res['beta'],
-        'alpha_intra': alpha_intra, 'alpha_inter': alpha_inter})
+    if 'counts' in matrix_df.columns and 'counts_int' in matrix_df.columns:
+        res = estimate_alpha(
+            matrix_df, counts_col='counts_int', x0=alpha, use_poisson=True,
+            mods=infer_alpha_mods, max_iter=0, verbose=False)
+        alpha_intra, alpha_inter = np.tile(res['alphas'], int(2 / np.array(res['alphas'], ndmin=1).size))
+        results.append({
+            'desc': 'eval_at_alpha.poisson', 'obj': res['obj'], 'beta': res['beta'],
+            'alpha_intra': alpha_intra, 'alpha_inter': alpha_inter})
 
     # Infer alpha with integer-counts, with designated nreads
     alpha, beta, obj = estimate_alphas_from_true_dis(
@@ -90,21 +92,28 @@ def infer_alpha_float_vs_int(matrix_df, ambiguity='ua', dis_agg_func='mean', inf
 
 def plot_counts_vs_dis(matrix_df, mask, alpha, counts_col, dis_col='dis_mean', beta=None,
                        title=None, scatter_opacity=0.1, outfile=None, counts_max_percentile=0.999,
-                       counts_scatter_percentile=0.95):
+                       dis_max_percentile=0.999, counts_scatter_percentile=0.95):
     matrix_df['dis_inverse'] = matrix_df[dis_col].pow(-1)
 
-    mask = mask & (matrix_df[counts_col] < matrix_df.loc[mask, counts_col].quantile(
-        counts_max_percentile))
+    counts_cutoff = matrix_df.loc[mask, counts_col].quantile(counts_max_percentile)
+    dis_cutoff = matrix_df.loc[mask, 'dis_inverse'].quantile(dis_max_percentile)
+    mask = mask & (matrix_df[counts_col] <= counts_cutoff) & (matrix_df['dis_inverse'] <= dis_cutoff)
+    counts_scatter_cutoff = matrix_df.loc[mask, counts_col].quantile(counts_scatter_percentile)
+
+    print(counts_cutoff, dis_cutoff, counts_scatter_cutoff)
+    print(matrix_df.loc[mask, counts_col].max(), matrix_df.loc[mask, 'dis_inverse'].max())
     
     x = np.linspace(matrix_df.loc[mask, 'dis_inverse'].min(), matrix_df.loc[mask, 'dis_inverse'].max(), 100)
     if beta is None:
         beta = matrix_df[counts_col].sum() / np.sum(np.power(matrix_df[dis_col], alpha))
     y = beta * np.power(x, -alpha)  # beta * dis^alpha
+    mask_fit = (x <= dis_cutoff) & (y <= counts_cutoff)
+    x = x[mask_fit]
+    y = y[mask_fit]
 
     sns.jointplot(data=matrix_df[mask], x='dis_inverse', y=counts_col, kind='hex')
-    cutoff = matrix_df.loc[mask, counts_col].quantile(counts_scatter_percentile)
     sns.scatterplot(
-        data=matrix_df[mask & (matrix_df[counts_col] > cutoff)],
+        data=matrix_df[mask & (matrix_df[counts_col] > counts_scatter_cutoff)],
         x='dis_inverse', y=counts_col, linewidths=0, alpha=scatter_opacity, s=10)
     plt.plot(x, y, color='red')
     plt.xlabel("Inverse distances, $d_{ij}^{-1}$")
@@ -124,7 +133,7 @@ def plot_counts_vs_dis(matrix_df, mask, alpha, counts_col, dis_col='dis_mean', b
 
 def estimate_alphas_from_true_dis(matrix_df, num_infer=10, use_poisson=True, integer_counts=True,
                                   dis_agg_func='mean', infer_alpha_mask=None, infer_alpha_mods=None,
-                                  plot=True, outdir_fig=None, verbose=True):
+                                  plot=True, outdir_fig=None, verbose=True, plot_kwargs=None):
     from process_counts import filter_matrix_df
 
     dis_col = f'dis_{dis_agg_func}'
@@ -145,7 +154,7 @@ def estimate_alphas_from_true_dis(matrix_df, num_infer=10, use_poisson=True, int
     results_per_infer = []
     for seed in range(num_infer): # beta_from_intra_only, alpha_from_intra_only
         results_per_infer.append(estimate_alpha(
-            data, counts_col=counts_col, seed=seed, use_poisson=use_poisson,
+            data, counts_col=counts_col, dis_col=dis_col, seed=seed, use_poisson=use_poisson,
             mods=infer_alpha_mods))
     results_per_infer = pd.DataFrame(results_per_infer)
     results_per_infer = results_per_infer[results_per_infer.converged]
@@ -161,19 +170,23 @@ def estimate_alphas_from_true_dis(matrix_df, num_infer=10, use_poisson=True, int
     beta_ = results_best['beta']
 
     if plot:
+        if plot_kwargs is None:
+            plot_kwargs = {}
         outfile_intra = outfile_inter = None
         if outdir_fig is not None:
             tmp = f"alpha_infer.dis-{dis_agg_func}_vs_{counts_col.replace('_', '-')}"
             outfile_intra = os.path.join(outdir_fig, f"{tmp}.intra-mol.png")
             outfile_inter = os.path.join(outdir_fig, f"{tmp}.inter-mol.png")
-        plot_counts_vs_dis(
-            matrix_df, mask=~matrix_df['mask.diffM'], counts_col=counts_col, alpha=alpha_intra_,
-            beta=beta_, title=f"INTRA-molecular\nα={alpha_intra_:.3g}, β={beta_:.3g}",
-            outfile=outfile_intra)
-        plot_counts_vs_dis(
-            matrix_df, mask=matrix_df['mask.diffM'], counts_col=counts_col, alpha=alpha_inter_,
-            beta=beta_, title=f"Inter-molecular\nα={alpha_inter_:.3g}, β={beta_:.3g}",
-            outfile=outfile_inter)
+        if (~matrix_df['mask.diffM']).any():
+            plot_counts_vs_dis(
+                matrix_df, mask=~matrix_df['mask.diffM'], counts_col=counts_col,
+                dis_col=dis_col, alpha=alpha_intra_, beta=beta_, outfile=outfile_intra,
+                title=f"INTRA-molecular\nα={alpha_intra_:.3g}, β={beta_:.3g}", **plot_kwargs)
+        if (matrix_df['mask.diffM']).any():
+            plot_counts_vs_dis(
+                matrix_df, mask=matrix_df['mask.diffM'], counts_col=counts_col,
+                dis_col=dis_col, alpha=alpha_inter_, beta=beta_, outfile=outfile_inter,
+                title=f"Inter-molecular\nα={alpha_inter_:.3g}, β={beta_:.3g}", **plot_kwargs)
 
     return alpha_, beta_, results_best['obj']
 
@@ -338,7 +351,7 @@ def print_alpha_infer_results(d):
     for k, v in d.items():
         if k == 'grad':
             v = f"{v.mean():.3g}"
-        if k == 'alphas' and v.size == 2:
+        if k == 'alphas' and isinstance(v, np.ndarray) and v.size == 2:
             v = f"INTRA={v[0]:.3g}, inter={v[1]:.3g}"
         elif isinstance(v, float):
             v = f"{v:.3g}"

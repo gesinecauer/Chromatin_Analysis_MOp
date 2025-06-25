@@ -261,8 +261,9 @@ def save_matrices(lengths_df, matrix_df, ambiguity='ua', alpha=None, beta=None,
     # Plot counts & distances
     if outdir_counts is not None:
         plot_counts_single(
-            counts, lengths=lengths, title="Pseudo-counts, unambiguous",
-            outfile=os.path.join(outdir_counts, "images", "ua_counts.png"), mark_excluded=True)
+            counts, lengths=lengths, title="Pseudo-counts," + {
+                'ua': 'unambiguous', 'ambig': 'ambiguous', 'pa': 'partially ambiguous'}[ambiguity],
+            outfile=os.path.join(outdir_counts, "images", f"{ambiguity}_counts.png"), mark_excluded=True)
         for agg_func in ['mean', 'median']:
             plot_distance_matrix(
                 dis[agg_func], lengths=lengths, ploidy=2, title=f"'True' distances\n{agg_func} across cells",
@@ -380,8 +381,8 @@ def load_and_filter_data(input_file, min_percentile_loci_cov,
 
 def save_dataset(input_file, outdir, min_percentile_loci_cov=0.10, nreads=None, ambiguity='ua',
                  infer_alpha_mods='beta_from_intra_only', infer_alpha_dis='mean', num_infer_alpha=10,
-                 redo=False, min_nonmissing_per_phased_locus=0.05, nmol_per_hmlg_ratio=1, spacing=2.5,
-                 contact_th=0.75, name=None, verbose=True):
+                 only_include=None, redo=False, min_nonmissing_per_phased_locus=0.05,
+                 nmol_per_hmlg_ratio=1, spacing=2.5, contact_th=0.75, name=None, verbose=True):
 
     matrices, lengths_df, dir_matrix2d, name = load_and_filter_data(
         input_file, min_percentile_loci_cov=min_percentile_loci_cov,
@@ -394,7 +395,7 @@ def save_dataset(input_file, outdir, min_percentile_loci_cov=0.10, nreads=None, 
     if nreads is not None and isinstance(nreads, (int, float)) and nreads < 0:
         counts_as_int = False
         counts_col_for_matrix = 'counts'
-        desc_nreads = "non-integer"
+        desc = "non-integer"
     else:
         if verbose:
             print("\nCONVERTING COUNTS TO INTEGERS:", flush=True)
@@ -404,7 +405,14 @@ def save_dataset(input_file, outdir, min_percentile_loci_cov=0.10, nreads=None, 
             nreads = determine_max_nreads(matrix_df, verbose=verbose)
         matrix_df = get_integer_counts(matrix_df, nreads=nreads)
         nreads = matrix_df.counts_int.sum()  # Update with exact number of reads
-        desc_nreads = f"nreads{nreads:.3g}".replace('e+0', 'e').replace('e+', 'e')
+        desc = f"nreads{nreads:.3g}".replace('e+0', 'e').replace('e+', 'e')
+
+    # Prepare for (optional) filtering of data by bin type (intra-mol / intra-chrom)
+    if only_include is not None:
+        only_include = only_include.lower().replace('-', '')
+        if only_include not in ('intramol', 'intrachr'):
+            raise ValueError(f"{only_include=} not understood")
+        desc += f".{only_include}"
 
     # Get output directories
     if outdir is None:
@@ -412,9 +420,9 @@ def save_dataset(input_file, outdir, min_percentile_loci_cov=0.10, nreads=None, 
         infer_alpha_outdir = None
     else:
         outdirs = {
-            'ua': os.path.join(outdir, "unambig", f"{name}.{desc_nreads}"),
-            'ambig': os.path.join(outdir, "ambig", f"{name}.{desc_nreads}"),
-            'pa': os.path.join(outdir, "partial-ambig", f"{name}.{desc_nreads}"),
+            'ua': os.path.join(outdir, "unambig", f"{name}.{desc}"),
+            'ambig': os.path.join(outdir, "ambig", f"{name}.{desc}"),
+            'pa': os.path.join(outdir, "partial-ambig", f"{name}.{desc}"),
             'dist': os.path.join(outdir, "distances", name)}
         infer_alpha_outdir = os.path.join(outdirs[ambiguity], "struct_true.infer_alpha_from_dis")
         os.makedirs(infer_alpha_outdir, exist_ok=True)
@@ -433,6 +441,12 @@ def save_dataset(input_file, outdir, min_percentile_loci_cov=0.10, nreads=None, 
         matrix_df, ambiguity=ambiguity, dis_agg_func=infer_alpha_dis, infer_alpha_mask=None,
         infer_alpha_mods=infer_alpha_mods, plot=True, outdir=infer_alpha_outdir,
         num_infer=num_infer_alpha, verbose=verbose)
+
+    # Optionally filter for intra-mol or intra-chrom data only
+    if only_include == 'intramol':
+        matrix_df = matrix_df[matrix_df['mask.sameC-sameH']]
+    elif only_include == 'intrachr':
+        matrix_df = matrix_df[matrix_df['mask.sameC-sameH'] | matrix_df['mask.sameC-diffH']]
 
     # Save counts
     counts, dis, lengths = save_matrices(
@@ -456,6 +470,7 @@ def main():
     parser.add_argument("--infer_alpha_mods", nargs='+', type=str)
     parser.add_argument("--infer_alpha_dis", default='mean', type=str, choices=['mean', 'median'])
     parser.add_argument("--num_infer_alpha", default=10, type=int)
+    parser.add_argument("--only_include", type=str, choices=['intramol', 'intrachr'])
     parser.add_argument('--redo', default=False, action='store_true')
 
     # Making consensus pseudo-counts from sc distances
@@ -481,7 +496,8 @@ def main():
     save_dataset(
         input_file=args.data, outdir=args.outdir, min_percentile_loci_cov=args.min_percentile_loci_cov,
         nreads=args.nreads, ambiguity=args.ambiguity, infer_alpha_mods=args.infer_alpha_mods,
-        infer_alpha_dis=args.infer_alpha_dis, num_infer_alpha=args.num_infer_alpha, redo=args.redo,
+        infer_alpha_dis=args.infer_alpha_dis, num_infer_alpha=args.num_infer_alpha,
+        only_include=args.only_include, redo=args.redo,
         min_nonmissing_per_phased_locus=args.min_nonmissing_per_phased_locus,
         nmol_per_hmlg_ratio=nmol_per_hmlg_ratio,  spacing=args.spacing,
         contact_th=args.contact_th, name=name, verbose=args.verbose)

@@ -491,6 +491,7 @@ def restrict_to_equal_nmol_per_hmlg(data, cell_desc_file=None, cutoff_ratio=1, v
 
     # Remove homologs that were not able to be labeled (due to insufficient loci in common with pre-labeled data)
     df = df[~df.hmlg.isnull()]
+    df['hmlg'] = df.hmlg.astype(int)
 
     if cutoff_ratio is None:
         return df
