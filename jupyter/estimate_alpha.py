@@ -100,8 +100,7 @@ def plot_counts_vs_dis(matrix_df, mask, alpha, counts_col, dis_col='dis_mean', b
     mask = mask & (matrix_df[counts_col] <= counts_cutoff) & (matrix_df['dis_inverse'] <= dis_cutoff)
     counts_scatter_cutoff = matrix_df.loc[mask, counts_col].quantile(counts_scatter_percentile)
 
-    print(counts_cutoff, dis_cutoff, counts_scatter_cutoff)
-    print(matrix_df.loc[mask, counts_col].max(), matrix_df.loc[mask, 'dis_inverse'].max())
+    print(f"{counts_cutoff=:.3g}, {dis_cutoff=:.3g}")
     
     x = np.linspace(matrix_df.loc[mask, 'dis_inverse'].min(), matrix_df.loc[mask, 'dis_inverse'].max(), 100)
     if beta is None:
@@ -141,7 +140,7 @@ def estimate_alphas_from_true_dis(matrix_df, num_infer=10, use_poisson=True, int
         counts_col = 'counts_int'
         if verbose:
             print(f"Inferring alpha from true {dis_agg_func} distances & integer"
-                  f" pseudo-counts (nreads={matrix_df[counts_col].sum()})", flush=True)
+                  f" pseudo-counts (nreads={matrix_df[counts_col].sum():.3g})", flush=True)
     else:
         counts_col = 'counts'
         if verbose:
@@ -152,7 +151,7 @@ def estimate_alphas_from_true_dis(matrix_df, num_infer=10, use_poisson=True, int
     data = filter_matrix_df(matrix_df, mask=infer_alpha_mask)
 
     results_per_infer = []
-    for seed in range(num_infer): # beta_from_intra_only, alpha_from_intra_only
+    for seed in range(num_infer): # beta_from_intra_only, mask_intra
         results_per_infer.append(estimate_alpha(
             data, counts_col=counts_col, dis_col=dis_col, seed=seed, use_poisson=use_poisson,
             mods=infer_alpha_mods))
@@ -248,6 +247,7 @@ def fit_alpha_obj(alphas, counts, dis, mask_intra, use_poisson=False, mods=[], v
         else:
             obj_inter = ag_np.square(lambda_pois_inter - counts[~mask_intra])
 
+        # FIXME bug below - MSE & poisson obj treated differently
         if 'weight_equally' in mods:
             obj = ag_np.mean(obj_intra) + ag_np.mean(obj_inter)
         elif any([isinstance(x, (float, int)) for x in mods]):
