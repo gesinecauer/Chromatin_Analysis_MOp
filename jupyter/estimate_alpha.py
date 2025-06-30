@@ -227,33 +227,35 @@ def fit_alpha_obj(alphas, counts, dis, mask_intra, use_poisson=False, mods=[], v
         return obj
 
     alpha_intra, alpha_inter = alphas
+    num_intra = mask_intra.sum()
+    num_inter = (~mask_intra).sum()
 
     lambda_pois_intra = beta * ag_np.power(dis[mask_intra], alpha_intra)
     if len(lambda_pois_intra.shape) > 1:
         lambda_pois_intra = ag_np.sum(lambda_pois_intra, axis=1)
     if use_poisson:
-        obj_intra = poisson_nll(counts[mask_intra], lambda_pois=lambda_pois_intra)
+        obj_intra = poisson_nll(counts[mask_intra], lambda_pois=lambda_pois_intra) * num_intra
     else:
-        obj_intra = ag_np.square(lambda_pois_intra - counts[mask_intra])
+        obj_intra = ag_np.sum(ag_np.square(lambda_pois_intra - counts[mask_intra]))
 
     if 'alpha_from_intra_only' in mods:
-        obj = ag_np.mean(obj_intra)
+        obj = obj_intra / num_intra
     else:
         lambda_pois_inter = beta * ag_np.power(dis[~mask_intra], alpha_inter)
         if len(lambda_pois_inter.shape) > 1:
             lambda_pois_inter = ag_np.sum(lambda_pois_inter, axis=1)
         if use_poisson:
-            obj_inter = poisson_nll(counts[~mask_intra], lambda_pois=lambda_pois_inter)
+            obj_inter = poisson_nll(counts[~mask_intra], lambda_pois=lambda_pois_inter) * num_inter
         else:
-            obj_inter = ag_np.square(lambda_pois_inter - counts[~mask_intra])
+            obj_inter = ag_np.sum(ag_np.square(lambda_pois_inter - counts[~mask_intra]))
 
         # FIXME bug below - MSE & poisson obj treated differently
         if 'weight_equally' in mods:
-            obj = ag_np.mean(obj_intra) + ag_np.mean(obj_inter)
+            obj = (obj_intra / num_intra) + (obj_inter / num_inter)
         elif any([isinstance(x, (float, int)) for x in mods]):
-            obj = ag_np.mean(obj_intra) + ag_np.mean(obj_inter) * [x for x in mods if isinstance(x, (float, int))][0]
+            obj = (obj_intra / num_intra) + (obj_inter / num_inter) * [x for x in mods if isinstance(x, (float, int))][0]
         else:
-            obj = (ag_np.sum(obj_intra) + ag_np.sum(obj_inter)) / counts.size
+            obj = (obj_intra + obj_inter) / counts.size
 
     if verbose:
         if verbose == 1 and np.isclose(alpha_intra, -2, atol=1e-3):
@@ -275,7 +277,7 @@ def obj_wrap(alphas, counts, dis, mask_intra, use_poisson=False, mods=[], verbos
 
 
 def grad_wrap(alphas, counts, dis, mask_intra, use_poisson=False, mods=[], verbose=False):
-    return np.array(fit_alpha_obj(alphas, counts=counts, dis=dis, mask_intra=mask_intra, use_poisson=use_poisson, mods=mods)).ravel()
+    return np.array(fit_alpha_grad(alphas, counts=counts, dis=dis, mask_intra=mask_intra, use_poisson=use_poisson, mods=mods)).ravel()
 
 
 def estimate_alpha(matrix_df, counts_col, dis_col='dis_mean', x0=None, bounds=(-6, -1),

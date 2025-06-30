@@ -270,7 +270,7 @@ def main():
 
     name = args.name
     if name is None:
-        name = re.sub(r'(^|.*/)cluster(?:\.LINK){0,1}/([^/]+)(/.*|$)', r'\2', os.path.dirname(input_file))
+        name = re.sub(r'(^|.*/)cluster(?:\.LINK){0,1}/([^/]+)(/.*|$)', r'\2', os.path.dirname(args.data))
 
     nmol_per_hmlg_ratio = args.nmol_per_hmlg_ratio
     if args.nmol_per_hmlg_ratio >= 1000:
