@@ -333,7 +333,7 @@ def save_sc_data(dir_matrix2d, lengths_df, dist_scale_factor, outdir, redo=False
         print("\nSAVING SINGLE-CELL DISTANCE DATA:", flush=True)
 
     if redo or not os.path.isfile(outfile_per_locus):
-        sc_dis = load_sc_dis_per_locus(sc_dis_file, scale=False, verbose=verbose)
+        sc_dis = load_sc_dis_per_locus(sc_dis_file, verbose=verbose)
         for col in ['dis_mean', 'dis_med', 'dis']:
             sc_dis[col] /= dist_scale_factor
     
@@ -352,7 +352,7 @@ def save_sc_data(dir_matrix2d, lengths_df, dist_scale_factor, outdir, redo=False
 
 def load_and_filter_data(input_file, min_percentile_loci_cov,
                          min_nonmissing_per_phased_locus=0.05, nmol_per_hmlg_ratio=1,
-                         spacing=2.5, contact_th=0.75, name=None, verbose=True):
+                         spacing=2.5, contact_th=0.75, alpha=None, name=None, verbose=True):
     if name is None:
         name = re.sub(r'(^|.*/)cluster/([^/]+)(/.*|$)', r'\2', os.path.dirname(input_file))
     if nmol_per_hmlg_ratio >= 1000:
@@ -360,7 +360,7 @@ def load_and_filter_data(input_file, min_percentile_loci_cov,
     matrices, lengths_df, dir_matrix2d = process_sc_dna_coords(
         input_file=input_file, min_nonmissing_per_phased_locus=min_nonmissing_per_phased_locus,
         nmol_per_hmlg_ratio=nmol_per_hmlg_ratio, spacing=spacing, name=name,
-        contact_th=contact_th, verbose=False)
+        contact_th=contact_th, alpha=alpha, verbose=False)
 
     # Additional filtering of loci by missingness across cells
     if verbose and min_percentile_loci_cov > 0:
@@ -382,13 +382,13 @@ def load_and_filter_data(input_file, min_percentile_loci_cov,
 def save_dataset(input_file, outdir, min_percentile_loci_cov=0.10, nreads=None, ambiguity='ua',
                  infer_alpha_mods='beta_from_intra_only', infer_alpha_dis='mean', num_infer_alpha=10,
                  only_include=None, redo=False, min_nonmissing_per_phased_locus=0.05,
-                 nmol_per_hmlg_ratio=1, spacing=2.5, contact_th=0.75, name=None, verbose=True):
+                 nmol_per_hmlg_ratio=1, spacing=2.5, contact_th=0.75, alpha=None, name=None, verbose=True):
 
     matrices, lengths_df, dir_matrix2d, name = load_and_filter_data(
         input_file, min_percentile_loci_cov=min_percentile_loci_cov,
         min_nonmissing_per_phased_locus=min_nonmissing_per_phased_locus,
         nmol_per_hmlg_ratio=nmol_per_hmlg_ratio, spacing=spacing,
-        contact_th=contact_th, name=name, verbose=verbose)
+        contact_th=contact_th, alpha=alpha, name=name, verbose=verbose)
     matrix_df, dist_scale_factor = prep_matrix_df(lengths_df, matrices=matrices)
 
     # Get integer counts
@@ -406,6 +406,8 @@ def save_dataset(input_file, outdir, min_percentile_loci_cov=0.10, nreads=None, 
         matrix_df = get_integer_counts(matrix_df, nreads=nreads)
         nreads = matrix_df.counts_int.sum()  # Update with exact number of reads
         desc = f"nreads{nreads:.3g}".replace('e+0', 'e').replace('e+', 'e')
+    if alpha is not None:
+        desc += f".sc_alpha{alpha:g}"
 
     # Prepare for (optional) filtering of data by bin type (intra-mol / intra-chrom)
     if only_include is not None:
@@ -419,6 +421,7 @@ def save_dataset(input_file, outdir, min_percentile_loci_cov=0.10, nreads=None, 
         outdirs = {'ua': None, 'ambig': None, 'pa': None, 'dist': None}
         infer_alpha_outdir = None
     else:
+        
         outdirs = {
             'ua': os.path.join(outdir, "unambig", f"{name}.{desc}"),
             'ambig': os.path.join(outdir, "ambig", f"{name}.{desc}"),
@@ -478,7 +481,8 @@ def main():
     parser.add_argument("--min_nonmissing_per_phased_locus", default=0.05, type=float)
     parser.add_argument("--nmol_per_hmlg_ratio", default=1, type=float)
     parser.add_argument("--name", type=str)
-    parser.add_argument("--contact_th", default=0.75, type=float)
+    parser.add_argument("--contact_th", type=float)
+    parser.add_argument("--alpha", type=float)
 
     # Verbosity
     parser.add_argument('--verbose', default=True, action='store_true')
@@ -487,7 +491,7 @@ def main():
 
     name = args.name
     if name is None:
-        name = re.sub(r'(^|.*/)cluster(?:\.LINK){0,1}/([^/]+)(/.*|$)', r'\2', os.path.dirname(input_file))
+        name = re.sub(r'(^|.*/)cluster(?:\.LINK){0,1}/([^/]+)(/.*|$)', r'\2', os.path.dirname(args.data))
 
     nmol_per_hmlg_ratio = args.nmol_per_hmlg_ratio
     if args.nmol_per_hmlg_ratio >= 1000:
@@ -500,7 +504,7 @@ def main():
         only_include=args.only_include, redo=args.redo,
         min_nonmissing_per_phased_locus=args.min_nonmissing_per_phased_locus,
         nmol_per_hmlg_ratio=nmol_per_hmlg_ratio,  spacing=args.spacing,
-        contact_th=args.contact_th, name=name, verbose=args.verbose)
+        contact_th=args.contact_th, alpha=args.alpha, name=name, verbose=args.verbose)
 
 
 if __name__ == "__main__":
