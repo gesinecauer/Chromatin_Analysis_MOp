@@ -51,7 +51,7 @@ def generate_counts_from_sc_dist(sc_dist_vec, contact_th=0.75, alpha=None, idx=N
     return mean_counts_matrix, nonmissing_per_locus_pair
 
 
-def save_sc_dis_intramol(sc_dist_vec, idx, outfile, lengths_df):
+def save_sc_dis_intrachr(sc_dist_vec, idx, outfile_sameH, outfile_diffH, lengths_df):
     row, col = np.triu_indices(idx.size, 1)
     row = idx[row]
     col = idx[col]
@@ -59,11 +59,18 @@ def save_sc_dis_intramol(sc_dist_vec, idx, outfile, lengths_df):
     
     matrix_df = make_matrix_df(lengths_df)
     matrix_df = matrix_df.loc[matrix_idx]  # Sort/filter to match sc_dist_vec
-    
-    sameM = ~matrix_df['mask.diffM'].values
-    df = pd.DataFrame(data=sc_dist_vec.T[sameM], index=matrix_df.index[sameM])
 
-    df.to_csv(outfile, index=True, header=False, sep='\t')
+    if not os.path.exists(outfile_sameH):
+        print('                 ...intra-molecular', flush=True)
+        mask = matrix_df['mask.sameC-sameH'].values
+        df = pd.DataFrame(data=sc_dist_vec.T[mask], index=matrix_df.index[mask])
+        df.to_csv(outfile_sameH, index=True, header=False, sep='\t')
+
+    if not os.path.exists(outfile_diffH):
+        print('                 ...intra-chromosomal, inter-homolog', flush=True)
+        mask = matrix_df['mask.sameC-diffH'].values
+        df = pd.DataFrame(data=sc_dist_vec.T[mask], index=matrix_df.index[mask])
+        df.to_csv(outfile_diffH, index=True, header=False, sep='\t')
     
 
 def save_sc_dis_per_locus(sc_dist_vec, idx, outfile, lengths_df):
@@ -127,11 +134,13 @@ def process_sc_distances(sc_dna_coords, idx, outdir, lengths_df, contact_th=0.75
     nonmissing_per_locus_pair_file = os.path.join(outdir, f'{name}num_nonmissing.npy')
     sc_dist_per_locus_file = os.path.join(outdir, f'{name}distances.per_locus.tsv.gz')
     sc_dist_intramol_file = os.path.join(outdir, f'{name}distances.intramol.tsv.gz')
+    sc_dist_sameC_diffH_file = os.path.join(outdir, f'{name}distances.sameC-diffH.tsv.gz')
 
     print(f"Counts: {mean_counts_matrix_file}", flush=True)
     
     all_files = [sc_dist_vec_file, median_dist_matrix_file, mean_dist_matrix_file, mean_counts_matrix_file,
-                nonmissing_per_locus_pair_file, sc_dist_per_locus_file, sc_dist_intramol_file]
+                nonmissing_per_locus_pair_file, sc_dist_per_locus_file, sc_dist_intramol_file,
+                 sc_dist_sameC_diffH_file]
     missing_files = [os.path.basename(f) for f in all_files if not os.path.exists(f)]
     if (not redo) and len(missing_files) == 0:
         return {'counts': np.load(mean_counts_matrix_file), 'dis_mean': np.load(mean_dist_matrix_file),
@@ -186,9 +195,11 @@ def process_sc_distances(sc_dna_coords, idx, outdir, lengths_df, contact_th=0.75
         print('Get single-cell distances per locus...', flush=True)
         save_sc_dis_per_locus(sc_dist_vec, idx=idx, outfile=sc_dist_per_locus_file, lengths_df=lengths_df)
 
-    if redo or not os.path.exists(sc_dist_intramol_file):
-        print('Saving intra-molecular single-cell distances...', flush=True)
-        save_sc_dis_intramol(sc_dist_vec, idx=idx, outfile=sc_dist_intramol_file, lengths_df=lengths_df)
+    if redo or not (os.path.exists(sc_dist_intramol_file) and os.path.exists(sc_dist_sameC_diffH_file)):
+        print('Saving intra-chromosomal single-cell distances...', flush=True)
+        save_sc_dis_intrachr(
+            sc_dist_vec, idx=idx, outfile_sameH=sc_dist_intramol_file,
+            outfile_diffH=sc_dist_sameC_diffH_file, lengths_df=lengths_df)
     
 
     print('Done!', flush=True)
