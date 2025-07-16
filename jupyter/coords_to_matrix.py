@@ -14,14 +14,39 @@ from process_loci import get_index_of_loci
 from topsy.analysis.compare_distances import make_matrix_df
 
 
-def generate_counts_from_sc_dist(sc_dist_vec, contact_th=0.75, alpha=None, idx=None, exclude_missing_loci=False):
-    if (contact_th is None) + (alpha is None) != 1:
-        raise ValueError(f"Must input contact_th or alpha (but not both). Input: {contact_th=:g}, {alpha=:g}")
-    if alpha is not None and (alpha > -1 or alpha < -6):
-        raise ValueError(f"Alpha should be in the range [-6, -1], inputted {alpha=:g}")
-    if contact_th is not None and (contact_th > np.nanmax(sc_dist_vec) or contact_th < np.nanmin(sc_dist_vec)):
+def logistic(d, k, d0, nu=1, q=1):
+    tmp = -k * (d - d0)
+    if nu == 1:
+        counts = 1 / (1 + q * np.exp(tmp))
+    else:
+        counts = 1 / np.power(1 + q * np.exp(tmp), 1 / nu)
+    return counts
+
+
+def get_transfer_func_params(contact_th=None, alpha=None, k=None, d0=None, sc_dist_vec=None):
+    if (contact_th is None) + (alpha is None) + (k is None or d0 is None) != 2:
+        raise ValueError("Must input either: \n- contact_th\n- alpha\n- k & d0."
+                         f"\nInput: {contact_th=:g}, {alpha=:g}, {k=:g}, {d0=:g}")
+
+    if sc_dist_vec is not None:
+        if (contact_th is not None) and (
+            contact_th > np.nanmax(sc_dist_vec) or contact_th < np.nanmin(sc_dist_vec)):
         raise ValueError(f"{contact_th=:g}μm is not appropriate for sc distances, which range from"
-                         f" {np.nanmin(sc_dist_vec):g}μm to {np.nanmax(sc_dist_vec):g}μm")
+                     f" {np.nanmin(sc_dist_vec):g}μm to {np.nanmax(sc_dist_vec):g}μm")
+    if alpha is not None:
+        if alpha > -1 or alpha < -6:
+            raise ValueError(f"Alpha should be in the range [-6, -1], inputted {alpha=:g}")
+    if k is not None and d0 is not None:
+        if d0 < 0 or d0 > 1:
+            raise ValueError(f"d0 should be in the range [0, 1], inputted {d0=:g}")
+        if k >= 0:
+            raise ValueError(f"k should be < 0, inputted {k=:g}")
+    
+    return contact_th, alpha, k, d0
+
+
+def generate_counts_from_sc_dist(sc_dist_vec, transfer_func_kwargs, idx=None, exclude_missing_loci=False):
+    contact_th, alpha, k, d0 = get_transfer_func_params(**transfer_func_kwargs, sc_dist_vec=None)
 
     # In how many cells is each pair of loci detected?
     has_data = np.invert(np.isnan(sc_dist_vec)).astype(int).sum(axis=0)
@@ -31,9 +56,12 @@ def generate_counts_from_sc_dist(sc_dist_vec, contact_th=0.75, alpha=None, idx=N
     if contact_th is not None:  # Use contact threshold approach
         pass_thresh = (sc_dist_vec < contact_th).astype(int).sum(axis=0)
         res = squareform(pass_thresh / has_data)
-    else:  # Use alpha to generate sc counts via transfer function
+    elif alpha is not None:  # Generate sc counts via 'c = d^alpha' transfer function
         counts_vec = np.nanmean(np.power(sc_dist_vec, alpha), axis=0)
         print(f"{counts_vec.max()=:g}", flush=True)
+        res = squareform(counts_vec)
+    else:  # Generate counts via logistic transfer function
+        counts_vec = np.nanmean(logistic(sc_dist_vec, k=k, d0=d0), axis=0)
         res = squareform(counts_vec)
 
     # Add missing data if desired
@@ -97,7 +125,8 @@ def save_sc_dis_per_locus(sc_dist_vec, idx, outfile, lengths_df):
         print(f"{len(df)=}, {len(matrix_df)=}, {idx_mismatch.sum()=}", flush=True)
         print(matrix_df.head().index, flush=True)
         print(df.head().index, flush=True)
-        raise ValueError(f"Index mismatch!! {len(df)=}, {len(matrix_df)=}\n{idx_mismatch.sum()} indices in df but not in matrix_df:\n{idx_mismatch[idx_mismatch].index}")
+        raise ValueError(f"Index mismatch!! {len(df)=}, {len(matrix_df)=}\n{idx_mismatch.sum()}"
+                         f" indices in df but not in matrix_df:\n{idx_mismatch[idx_mismatch].index}")
     
     df = df.join(sameM).reset_index().rename({'index': 'idx'}, axis=1).sort_values(
         ['same_molecule', 'idx'], ascending=[False, True])
@@ -110,11 +139,8 @@ def save_sc_dis_per_locus(sc_dist_vec, idx, outfile, lengths_df):
     df.to_csv(outfile, index=False, header=False, sep='\t')
 
 
-def process_sc_distances(sc_dna_coords, idx, outdir, lengths_df, contact_th=0.75, alpha=None, name=None, redo=False):
-    if (contact_th is None) + (alpha is None) != 1:
-        raise ValueError(f"Must input contact_th or alpha (but not both). Input: {contact_th=:g}, {alpha=:g}")
-    if alpha is not None and (alpha > -1 or alpha < -6):
-        raise ValueError(f"Alpha should be in the range [-6, -1], inputted {alpha=:g}")
+def process_sc_distances(sc_dna_coords, idx, outdir, lengths_df, transfer_func_kwargs, name=None, redo=False):
+    contact_th, alpha, k, d0 = get_transfer_func_params(**transfer_func_kwargs)  # Check params
 
     os.makedirs(outdir, exist_ok=True)
     if name is not None and name != "":
@@ -181,7 +207,7 @@ def process_sc_distances(sc_dna_coords, idx, outdir, lengths_df, contact_th=0.75
     if redo or not (os.path.exists(mean_counts_matrix_file) and os.path.exists(nonmissing_per_locus_pair_file)):
         print('Generate counts...', flush=True)
         mean_counts_matrix, nonmissing_per_locus_pair = generate_counts_from_sc_dist(
-            sc_dist_vec, contact_th=contact_th, alpha=alpha, idx=idx)
+            sc_dist_vec, transfer_func_kwargs=transfer_func_kwargs, idx=idx)
         print('                 ...saving mean contacts across cells', flush=True)
         if not os.path.exists(mean_counts_matrix_file):
             np.save(mean_counts_matrix_file, mean_counts_matrix)
@@ -200,7 +226,6 @@ def process_sc_distances(sc_dna_coords, idx, outdir, lengths_df, contact_th=0.75
         save_sc_dis_intrachr(
             sc_dist_vec, idx=idx, outfile_sameH=sc_dist_intramol_file,
             outfile_diffH=sc_dist_sameC_diffH_file, lengths_df=lengths_df)
-    
 
     print('Done!', flush=True)
     return {'counts': mean_counts_matrix, 'dis_mean': mean_dist_matrix, 'dis_median': median_dist_matrix, 'nonmissing': nonmissing_per_locus_pair}
@@ -221,10 +246,9 @@ def add_missing_loci(df, spacing=2.5):
 
 def process_sc_dna_coords(input_file, outdir=None, min_nonmissing_per_phased_locus=0.05, nmol_per_hmlg_ratio=1,
                           spacing=2.5, contact_th=0.75, alpha=None, redo=False, name=None, verbose=False):
-    if (contact_th is None) + (alpha is None) != 1:
-        raise ValueError(f"Must input contact_th or alpha (but not both). Input: {contact_th=:g}, {alpha=:g}")
-    if alpha is not None and (alpha > -1 or alpha < -6):
-        raise ValueError(f"Alpha should be in the range [-6, -1], inputted {alpha=:g}")
+
+    transfer_func_kwargs = dict(contact_th=contact_th, alpha=alpha, k=k, d0=d0)
+    get_transfer_func_params(**transfer_func_kwargs)  # Check params
 
     # Assign defaults
     if min_nonmissing_per_phased_locus is None:
@@ -273,6 +297,11 @@ def process_sc_dna_coords(input_file, outdir=None, min_nonmissing_per_phased_loc
     lengths_df['start'] = lengths_df['mid'] - int(spacing * 1e6 / 2)
     lengths_df['end'] = lengths_df['mid'] + int(spacing * 1e6 / 2)
     lengths_df = lengths_df[['chrom', 'start', 'end', 'idx_genome', 'idx_chrom', 'mid', 'has_data', 'cell_cov_min', 'cell_cov_h1', 'cell_cov_h2']]
+
+    # Save bed file of chromosome lengths
+    lengths_df_cp = lengths_df.copy()
+    lengths_df_cp.columns = [f"#{c}" for c in lengths_df_cp.columns]
+    lengths_df_cp.to_csv(os.path.join(outdir, "counts.bed"), index=False, header=True, sep="\t")
     
     # Get 3D coordinates for each cell (shape = ncells, nloci, ndim)
     df.sort_values(['idx', 'cell_id'], inplace=True)
@@ -285,7 +314,7 @@ def process_sc_dna_coords(input_file, outdir=None, min_nonmissing_per_phased_loc
 
     matrices = process_sc_distances(
         sc_dna_coords, idx=idx, outdir=outdir_matrix2d, lengths_df=lengths_df,
-        contact_th=contact_th, alpha=alpha, redo=redo, name=name)
+        transfer_func_kwargs=transfer_func_kwargs, redo=redo, name=name)
 
     return matrices, lengths_df, outdir_matrix2d
 
@@ -302,6 +331,8 @@ def main():
     parser.add_argument("--name", type=str)
     parser.add_argument("--contact_th", type=float)
     parser.add_argument("--alpha", type=float)
+    parser.add_argument("--k", type=float)
+    parser.add_argument("--d0", type=float)
     # parser.add_argument("--chrom", type=str, nargs='+')
     parser.add_argument('--verbose', default=True, action='store_true')
     parser.add_argument('--silent', dest='verbose', default=True, action='store_false')
@@ -318,7 +349,7 @@ def main():
     process_sc_dna_coords(
         input_file=args.data, min_nonmissing_per_phased_locus=args.min_nonmissing_per_phased_locus,
         nmol_per_hmlg_ratio=nmol_per_hmlg_ratio, spacing=args.spacing, outdir=args.outdir, name=name,
-        contact_th=args.contact_th, alpha=args.alpha, verbose=args.verbose)
+        contact_th=args.contact_th, alpha=args.alpha, k=args.k, d0=args.d0, verbose=args.verbose)
 
 
 if __name__ == "__main__":
