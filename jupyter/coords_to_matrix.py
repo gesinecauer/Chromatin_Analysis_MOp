@@ -30,15 +30,15 @@ def get_transfer_func_params(contact_th=None, alpha=None, k=None, d0=None, sc_di
 
     if sc_dist_vec is not None:
         if (contact_th is not None) and (
-            contact_th > np.nanmax(sc_dist_vec) or contact_th < np.nanmin(sc_dist_vec)):
-        raise ValueError(f"{contact_th=:g}μm is not appropriate for sc distances, which range from"
-                     f" {np.nanmin(sc_dist_vec):g}μm to {np.nanmax(sc_dist_vec):g}μm")
+                contact_th > np.nanmax(sc_dist_vec) or contact_th < np.nanmin(sc_dist_vec)):
+            raise ValueError(f"{contact_th=:g}μm is not appropriate for sc distances, which range from"
+                         f" {np.nanmin(sc_dist_vec):g}μm to {np.nanmax(sc_dist_vec):g}μm")
     if alpha is not None:
         if alpha > -1 or alpha < -6:
             raise ValueError(f"Alpha should be in the range [-6, -1], inputted {alpha=:g}")
     if k is not None and d0 is not None:
         if d0 < 0 or d0 > 1:
-            raise ValueError(f"d0 should be in the range [0, 1], inputted {d0=:g}")
+            raise ValueError(f"d0 should be in the range [0μm, 1μm] , inputted {d0=:g}")
         if k >= 0:
             raise ValueError(f"k should be < 0, inputted {k=:g}")
     
@@ -155,8 +155,10 @@ def process_sc_distances(sc_dna_coords, idx, outdir, lengths_df, transfer_func_k
     # sc_counts_vec_file = os.path.join(outdir, f'{name}counts.vector_per_cell.cutoff{contact_th:g}.npy')
     if contact_th is not None:
         mean_counts_matrix_file = os.path.join(outdir, f'{name}counts.mean.cutoff{contact_th:g}.npy')
+    elif alpha is not None:
+        mean_counts_matrix_file = os.path.join(outdir, f'{name}counts.mean.alpha{alpha:.4g}.npy')
     else:
-        mean_counts_matrix_file = os.path.join(outdir, f'{name}counts.mean.alpha{alpha:g}.npy')
+        mean_counts_matrix_file = os.path.join(outdir, f'{name}counts.mean.k{k:.4g}_m{d0:.4g}.npy')
     nonmissing_per_locus_pair_file = os.path.join(outdir, f'{name}num_nonmissing.npy')
     sc_dist_per_locus_file = os.path.join(outdir, f'{name}distances.per_locus.tsv.gz')
     sc_dist_intramol_file = os.path.join(outdir, f'{name}distances.intramol.tsv.gz')
@@ -245,7 +247,7 @@ def add_missing_loci(df, spacing=2.5):
 
 
 def process_sc_dna_coords(input_file, outdir=None, min_nonmissing_per_phased_locus=0.05, nmol_per_hmlg_ratio=1,
-                          spacing=2.5, contact_th=0.75, alpha=None, redo=False, name=None, verbose=False):
+                          spacing=2.5, contact_th=None, alpha=None, k=None, d0=None, redo=False, name=None, verbose=False):
 
     transfer_func_kwargs = dict(contact_th=contact_th, alpha=alpha, k=k, d0=d0)
     get_transfer_func_params(**transfer_func_kwargs)  # Check params

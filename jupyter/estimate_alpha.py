@@ -119,6 +119,7 @@ def plot_counts_vs_dis(matrix_df, mask, alpha, counts_col, dis_col='dis_mean', b
     plt.ylabel("Pseudo-counts, $c_{ij}$")
     if title is not None:
         plt.suptitle(title)
+    plt.tight_layout()
 
     if outfile is None:
         plt.show()
