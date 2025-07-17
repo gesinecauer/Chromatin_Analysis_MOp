@@ -66,10 +66,33 @@ def logistic_jax(d, X, infer_nu=False, infer_q=False):
 
     tmp = -k * (d - d0)
     bar = 1 + q * jnp.exp(tmp)
-    baz = jnp.power(relu(bar), 1 / nu)
-    counts = 1 / baz
 
-    # counts = 1 / jnp.power(relu(1 + q * jnp.exp(tmp)), 1 / nu)
+
+    # NOTES: 
+    # If bar<0 and nu>1:  baz=bar^(1/nu)=nan
+    # If bar=0:           baz=bar^(1/nu)=0 → counts=1/baz=Inf
+    #                     log(baz)=log(bar)/nu=-Inf
+    # ...But bar isn't <=0 unless q<=0 and q<-1/e^tmp... so it doesn't matter, given my bound of q>0
+    
+    
+
+    bar = relu(bar)  # Because if bar<0 and nu>1, baz=bar^(1/nu)
+    # bar = jnp.where(bar > 0, bar, 1)  # bar=min(bar, 1)
+
+    # # invalid value (inf) encountered in pow
+    # if type(X).__name__ not in ("JVPTracer", "DynamicJaxprTracer"):
+    #     print_iter(X, infer_nu=infer_nu, infer_q=infer_q, note='AGH')
+    #     print(f"tmp... mean={tmp.mean():<.4g}  min={tmp[jnp.isfinite(tmp)].min():<.4g}  max={tmp[jnp.isfinite(tmp)].max():<.4g}", flush=True)
+    #     print(f"bar... mean={bar.mean():<.4g}  min={bar[jnp.isfinite(bar)].min():<.4g}  max={bar[jnp.isfinite(bar)].max():<.4g}", flush=True)
+
+    # baz = jnp.power(bar, 1 / nu)  # Where bar was <=0, bar=0 → baz=0
+    # counts = 1 / baz  # Where bar was <=0, bar=0 → baz=0 → counts=Inf
+
+    log_baz = jnp.log(bar) / nu
+    log_counts = -log_baz
+    counts = jnp.exp(log_counts)
+
+    # counts = 1 / jnp.power(relu(1 + q * jnp.exp(tmp)), 1 / nu)  # wrong, don't use relu..? bar=0 → baz=0 → 1/baz=Inf
     # counts = 1 / jnp.power(1 + q * jnp.exp(tmp), 1 / nu)
     return counts
 
@@ -189,9 +212,9 @@ def estimate_logistic_param(data, intramol_only=False, infer_nu=False, infer_q=F
             [-np.inf, 0 - buffer],  # k < 0
             [0, 1]])  # 0 <= d0 <= 1
         if infer_nu:  # 0 < nu <= 1
-            bounds = np.concatenate(bounds, np.array([[0 + buffer, 1]]))
+            bounds = np.concatenate([bounds, np.array([[0 + buffer, 1]])])
         if infer_q:  # q > 0
-            bounds = np.concatenate(bounds, np.array([[0 + buffer, np.inf]]))
+            bounds = np.concatenate([bounds, np.array([[0 + buffer, np.inf]])])
         bounds = np.nan_to_num(bounds, posinf=50, neginf=-50)  # XXX
     else:
         bounds = np.array(bounds, ndmin=2, copy=None).reshape(-1, 2)
