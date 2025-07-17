@@ -24,7 +24,7 @@ with warnings.catch_warnings():
 _setup_jax(traceback=False, debug_nan_inf=False)
 import jax.numpy as jnp
 from jax import grad, jit
-from jax.nn import relu
+# from jax.nn import relu
 from scipy import optimize
 
 
@@ -37,8 +37,20 @@ from jax import grad, jit
 from jax.nn import relu
 
 
-def prep_data_for_inference(dir_matrix2d, mcool_file, lengths_file=None, resolution=2.5e6, verbose=True):
-    matrix_df, sc_dis, lengths_df = load(dir_matrix2d=dir_matrix2d, mcool_file=mcool_file, lengths_file=lengths_file, resolution=resolution, verbose=verbose)
+def prep_data_for_inference(dir_matrix2d, mcool_file, lengths_file=None, resolution=2.5e6, verbose=True, data_outdir=None, name=None):
+    npzfile = None
+    if data_outdir is not None:
+        name = '' if name is None else f"{name}."
+        npzfile = os.path.join(data_outdir, f'{name}pseudocounts_infer_logistic.data.npz')
+        if os.path.isfile(npzfile):
+            npzfile = np.load(npzfile)
+            data = InferArgs(snm3c=npzfile['snm3c'], sc_dis_arr=npzfile['sc_dis_arr'])
+            return data
+
+    # Load snm3c and single-cell distances
+    matrix_df, sc_dis, lengths_df = load(
+        dir_matrix2d=dir_matrix2d, mcool_file=mcool_file, lengths_file=lengths_file,
+        resolution=resolution, verbose=verbose)
 
     # Setup data for inference
     _, snm3c, dis_idx = ambiguate_matrix_df_for_inference(matrix_df)
@@ -47,7 +59,12 @@ def prep_data_for_inference(dir_matrix2d, mcool_file, lengths_file=None, resolut
     sc_dis_arr = np.asarray(sc_dis_arr, order='C')
     data = InferArgs(snm3c=snm3c, sc_dis_arr=sc_dis_arr)
 
+    if data_outdir is not None:
+        os.makedirs(data_outdir, exist_ok=True)
+        np.savez(npzfile, snm3c=snm3c, sc_dis_arr=sc_dis_arr)
+
     return data
+
 
 # ===================================================================================================================
 # ===================================================================================================================
@@ -65,32 +82,26 @@ def logistic_jax(d, X, infer_nu=False, infer_q=False):
         k, d0 = X
 
     tmp = -k * (d - d0)
-    bar = 1 + q * jnp.exp(tmp)
 
+    log_bar = jnp.log1p(q * jnp.exp(tmp))
+    # bar = 1 + q * jnp.exp(tmp)
 
     # NOTES: 
     # If bar<0 and nu>1:  baz=bar^(1/nu)=nan
     # If bar=0:           baz=bar^(1/nu)=0 → counts=1/baz=Inf
     #                     log(baz)=log(bar)/nu=-Inf
     # ...But bar isn't <=0 unless q<=0 and q<-1/e^tmp... so it doesn't matter, given my bound of q>0
-    
-    
-
-    bar = relu(bar)  # Because if bar<0 and nu>1, baz=bar^(1/nu)
-    # bar = jnp.where(bar > 0, bar, 1)  # bar=min(bar, 1)
-
     # # invalid value (inf) encountered in pow
     # if type(X).__name__ not in ("JVPTracer", "DynamicJaxprTracer"):
     #     print_iter(X, infer_nu=infer_nu, infer_q=infer_q, note='AGH')
     #     print(f"tmp... mean={tmp.mean():<.4g}  min={tmp[jnp.isfinite(tmp)].min():<.4g}  max={tmp[jnp.isfinite(tmp)].max():<.4g}", flush=True)
     #     print(f"bar... mean={bar.mean():<.4g}  min={bar[jnp.isfinite(bar)].min():<.4g}  max={bar[jnp.isfinite(bar)].max():<.4g}", flush=True)
-
-    # baz = jnp.power(bar, 1 / nu)  # Where bar was <=0, bar=0 → baz=0
-    # counts = 1 / baz  # Where bar was <=0, bar=0 → baz=0 → counts=Inf
-
-    log_baz = jnp.log(bar) / nu
+    
+    log_baz = log_bar / nu
     log_counts = -log_baz
     counts = jnp.exp(log_counts)
+    # baz = jnp.power(bar, 1 / nu)
+    # counts = 1 / baz
 
     # counts = 1 / jnp.power(relu(1 + q * jnp.exp(tmp)), 1 / nu)  # wrong, don't use relu..? bar=0 → baz=0 → 1/baz=Inf
     # counts = 1 / jnp.power(1 + q * jnp.exp(tmp), 1 / nu)
@@ -206,7 +217,7 @@ def estimate_logistic_param(data, intramol_only=False, infer_nu=False, infer_q=F
         obj_type = tuple([x.lower() for x in obj_type])
 
     # Get bounds
-    buffer = 0.1
+    buffer = 0.01
     if bounds is None:
         bounds = np.array([
             [-np.inf, 0 - buffer],  # k < 0
@@ -274,11 +285,11 @@ def print_iter(X, infer_nu=False, infer_q=False, note=None):
     else:
         k, d0 = X
 
-    to_print = f"k={k:<8.6g}  d₀={d0:<8.6g}"
+    to_print = f"k={k:<11.6g}  d₀={d0:<11.6g}"
     if infer_nu:
-        to_print += f"  𝜈={nu:<8.6g}"
+        to_print += f"  𝜈={nu:<11.6g}"
     if infer_q:
-        to_print += f"  q={q:<8.6g}"
+        to_print += f"  q={q:<11.6g}"
     if isinstance(note, (str, int)):
         to_print += f" ... {note}"
     elif note is not None:

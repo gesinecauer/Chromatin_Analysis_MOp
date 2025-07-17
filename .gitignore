@@ -1,5 +1,7 @@
 cluster.LINK
 sge_out.LINK
+nobackup/
+**/nobackup/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
