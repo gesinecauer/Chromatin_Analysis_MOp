@@ -30,11 +30,14 @@ from scipy import optimize
 
 from pastis.optimization.utils_poisson import _setup_jax
 _setup_jax(traceback=False, debug_nan_inf=False)
+from jax import config as jax_config
+jax_config.update("jax_captured_constants_warn_bytes", -1)
 
 from scipy import optimize
 import jax.numpy as jnp
 from jax import grad, jit
 from jax.nn import relu
+
 
 
 def prep_data_for_inference(dir_matrix2d, mcool_file, lengths_file=None,
@@ -151,16 +154,16 @@ def get_bulk_pseudocounts(X, data, intramol_only=False, infer_nu=False,
 
 def weighted_cov(x, y, weights=1):
     if isinstance(weights, (int, float)):
-        weights = np.full_like(x, weights)
+        weights = jnp.full_like(x, weights)
     x_weighted = jnp.average(x, weights=weights)
     y_weighted = jnp.average(y, weights=weights)
     # return jnp.sum(weights * (x - x_weighted) * (y - y_weighted)) / jnp.sum(weights)
-    return np.average((x - x_weighted) * (y - y_weighted), weights=weights)
+    return jnp.average((x - x_weighted) * (y - y_weighted), weights=weights)
 
 
 def weighted_pearsons_corr(x, y, weights=1):
     if isinstance(weights, (int, float)):
-        weights = np.full_like(x, weights)
+        weights = jnp.full_like(x, weights)
     return weighted_cov(x, y, weights) / jnp.sqrt(
         weighted_cov(x, x, weights) * weighted_cov(y, y, weights))
 
@@ -177,6 +180,9 @@ def obj_eval_pseudocounts(X, data, intramol_only=False, infer_nu=False,
         obj_type = (obj_type.lower(),)
     else:
         obj_type = tuple([x.lower() for x in obj_type])
+    valid_obj_type = ['pearson', 'rmse', 'mse']
+    if len([x for x in obj_type if x not in valid_obj_type]):
+        raise ValueError(f"{obj_type=}")
 
     counts = get_bulk_pseudocounts(
         X, data=data, intramol_only=intramol_only, infer_nu=infer_nu,
@@ -200,10 +206,6 @@ def obj_eval_pseudocounts(X, data, intramol_only=False, infer_nu=False,
             obj += mse
         elif 'rmse' in obj_type:
             obj += jnp.sqrt(mse)
-        else:
-            raise ValueError(f"{obj_type=}")
-    else:
-        raise ValueError(f"{obj_type=}")
 
     return obj
 
@@ -259,18 +261,20 @@ def estimate_logistic_param(data, intramol_only=False, infer_nu=False, infer_q=F
         bounds = np.array([
             [-np.inf, 0 - buffer],  # k < 0
             [0, 1]])  # 0 <= d0 <= 1
-        if infer_nu:  # 0 < nu <= 1  # XXX ************************
-            bounds = np.concatenate([bounds, np.array([[0 + buffer, 5]])])  # XXX ************************
-        if infer_q:  # q > 0
-            bounds = np.concatenate([bounds, np.array([[0 + buffer, np.inf]])])
-        bounds = np.nan_to_num(bounds, posinf=50, neginf=-50)  # XXX ************************
+        bound_nu = [0 + buffer, np.inf]  # nu > 0
+        bound_q = [0 + buffer, np.inf]  # q > 0
+        if infer_nu:
+            bounds = np.concatenate([bounds, np.array(bound_nu, ndmin=2)])
+        if infer_q:
+            bounds = np.concatenate([bounds, np.array(bound_q, ndmin=2)])
+        bounds = np.nan_to_num(bounds, posinf=100, neginf=-100)  # XXX ************************
     else:
         bounds = np.array(bounds, ndmin=2, copy=None).reshape(-1, 2)
     
     # Define initial value for X
     if init is None:
         rng = np.random.default_rng(seed=seed)
-        tmp = np.nan_to_num(bounds, posinf=20, neginf=-20)
+        tmp = np.nan_to_num(bounds, posinf=100, neginf=-100)
         init = rng.uniform(low=tmp[:, 0], high=tmp[:, 1])
         if verbose:
             print_iter(X=init, infer_nu=infer_nu, infer_q=infer_q, note='INIT')
@@ -350,7 +354,7 @@ class InferArgs(object):
     def __init__(self, snm3c, sc_dis_arr, genomic_dis, weights_exponent=None):
         self.snm3c = snm3c
         self.dis = sc_dis_arr
-        if weights_exponent is None:
+        if weights_exponent is None or not weights_exponent:
             self.weights = weights
         else:
             weights = np.power(genomic_dis, weights_exponent)
@@ -522,12 +526,13 @@ def load_and_infer(dir_matrix2d, mcool_file, resolution, outdir=None, name=None,
         _setup_jax(traceback=False, debug_nan_inf=True)
 
     df_input = pd.Series({
-        'intramol_only': intramol_only, 'obj_type': obj_type, 'seed': seed,
-        'max_iter': max_iter, 'factr': factr, 'maxls': maxls, 'pgtol': pgtol,
-        'init': init, 'bounds': bounds}).to_frame().rename({0: 'value'}, axis=1)
+        'seed': seed, 'obj_type': obj_type, 'weights_exponent': weights_exponent,
+        'intramol_only': intramol_only, 'factr': factr, 'pgtol': pgtol, 'maxls': maxls,
+        'max_iter': max_iter, 'init': init, 'bounds': bounds}).to_frame().rename(
+        {0: 'value'}, axis=1)
     df_input['type'] = 'input'
 
-    print("\nINFERRING WITH:\n" + df_input.value.to_string() + "\n", flush=True)
+    print("\nINFERRING WITH:\n" + df_input.value.to_string(float_format=lambda x: f"{x:g}") + "\n", flush=True)
     d = estimate_logistic_param(
         data=data, intramol_only=intramol_only, infer_nu=infer_nu, infer_q=infer_q,
         obj_type=obj_type, init=init, bounds=bounds, seed=seed, max_iter=max_iter,
@@ -541,7 +546,8 @@ def load_and_infer(dir_matrix2d, mcool_file, resolution, outdir=None, name=None,
 
     df = pd.concat([df_input, df_res]).reset_index().rename(
         {'index': 'key'}, axis=1)[['type', 'key', 'value']]
-    print("\nRESULTS:\n" + df.to_string(index=False), flush=True)
+    print("\nRESULTS:\n" + df.to_string(
+        index=False, header=False, float_format=lambda x: f"{x:g}"), flush=True)
 
 
 def main():
