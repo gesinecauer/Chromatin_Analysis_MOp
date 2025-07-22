@@ -375,16 +375,20 @@ class InferArgs(object):
 def get_unambig_idx_per_ambig(df):
     s = ('h' + df['i.hmlg'].astype(str) + '_h' + df['j.hmlg'].astype(
         str)).to_frame().reset_index().set_index(0)['index']
-    s['snm3c'] = np.nan
-    if df.snm3c.notnull().any():
-        s['snm3c'] = df.snm3c.mean()
-    s['genomic_dis'] = df.genomic_dis_ambig.mean()
+    # if 'snm3c' in df.columns:
+    #     s['snm3c'] = df.snm3c.mean()
+    # if 'genomic_dis_ambig' in df.columns:
+    #     s['genomic_dis_ambig'] = df.genomic_dis_ambig.mean()
     return s
 
 
-def ambiguate_matrix_df_for_inference(matrix_df):
+def ambiguate_matrix_df_for_inference(matrix_df, extra_grouping_cols=None):
     grp_cols = ['i.idx_ambig', 'j.idx_ambig', 'chrom', 'i.idx_chrom', 'j.idx_chrom',
-                'i.idx_clr', 'j.idx_clr']
+                'i.idx_clr', 'j.idx_clr', 'genomic_dis_ambig', 'snm3c']
+    if extra_grouping_cols is not None:
+        if isinstance(extra_grouping_cols, str):
+            extra_grouping_cols = [extra_grouping_cols]
+        grp_cols.extend(extra_grouping_cols)
     matrix_df_ambig = matrix_df.copy()
     mask_swap = matrix_df['i.idx_ambig'] > matrix_df['j.idx_ambig']
     if mask_swap.any():  # Ambig index pair should fall in upper triangular
@@ -393,13 +397,14 @@ def ambiguate_matrix_df_for_inference(matrix_df):
             matrix_df_ambig.loc[mask_swap, f'j.{col}'] = matrix_df.loc[mask_swap, f'i.{col}']
     matrix_df_ambig = matrix_df_ambig[  # Remove main diagonal
         matrix_df_ambig['i.idx_ambig'] != matrix_df_ambig['j.idx_ambig']]
-    matrix_df_ambig = matrix_df_ambig[grp_cols + ['i.hmlg', 'j.hmlg', 'snm3c', 'genomic_dis_ambig']].groupby(
+    matrix_df_ambig = matrix_df_ambig[grp_cols + ['i.hmlg', 'j.hmlg']].groupby(
         grp_cols).apply(get_unambig_idx_per_ambig, include_groups=False).reset_index(
         level=np.arange(len(grp_cols)).tolist())
+
     matrix_df_ambig = matrix_df_ambig[matrix_df_ambig.snm3c.notnull()]
 
     snm3c = np.asarray(matrix_df_ambig.snm3c.values, order='C')
-    genomic_dis = np.asarray(matrix_df_ambig.genomic_dis.values, order='C')
+    genomic_dis = np.asarray(matrix_df_ambig.genomic_dis_ambig.values, order='C')
 
     quadrants = ['h1_h1', 'h2_h2', 'h1_h2', 'h2_h1']
     dis_idx = np.concatenate([matrix_df_ambig[q].values for q in quadrants])
@@ -441,7 +446,12 @@ def load(dir_matrix2d, mcool_file, lengths_file=None, resolution=2.5e6, verbose=
     resolution = int(resolution)
     uri = f'{mcool_file}::/resolutions/{resolution:d}'
     clr = cooler.Cooler(uri)
-    snm3c = np.triu(clr.matrix(balance=True if 'Raw.' in mcool_file else False)[:, :], 1)
+    snm3c = clr.matrix(balance=True if 'Raw.' in mcool_file else False)[:, :]
+    np.fill_diagonal(snm3c, np.nan)
+    if clr.storage_mode != 'symmetric-upper':
+        if not np.all(np.isnan(snm3c[np.tril_indices(snm3c.shape[0])])):
+            warnings.warn("snm3C-seq cooler matrix is not symmetric, has different values below diagonal")
+        snm3c += snm3c.T
 
     clr_bins = clr.bins()[:].reset_index().rename({'index': 'idx_clr'}, axis=1)
     clr_bins['mid'] = clr_bins[['start', 'end']].mean(axis=1).round().astype(int)
@@ -495,6 +505,12 @@ def load(dir_matrix2d, mcool_file, lengths_file=None, resolution=2.5e6, verbose=
     matrix_df['genomic_dis_ambig'] = (matrix_df['i.idx_ambig'] - matrix_df['j.idx_ambig']).abs()
 
     return matrix_df, sc_dis, lengths_df
+
+# ===================================================================================================================
+# ===================================================================================================================
+# ===================================================================================================================
+
+
 
 # ===================================================================================================================
 # ===================================================================================================================
@@ -577,6 +593,9 @@ def main():
     # parser.add_argument('--verbose', default=True, action='store_true')
     # parser.add_argument('--silent', dest='verbose', default=True, action='store_false')
     args = parser.parse_args()
+
+    if args.dir_matrix2d.lower() in ('test', 'load'):
+        return
 
     load_and_infer(
         args.dir_matrix2d, mcool_file=args.mcool_file, resolution=args.resolution_mb * 1e6,
