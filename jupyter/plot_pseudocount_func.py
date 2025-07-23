@@ -35,8 +35,8 @@ def thresholded(x, cutoff):
 
 # ===================================================================================================================
 
-def assess_pseudocounts(matrix_df, sc_dis, transfer_func, transfer_func_kwargs=None,
-                        plot=False, perc_cutoff=0.95, agg_func='mean', verbose=False):
+def assess_pseudocounts(matrix_df, sc_dis, transfer_func, transfer_func_kwargs=None, plot=False,
+                        perc_cutoff=0.95, agg_func='mean', plot_hue=None, verbose=False):
     if transfer_func_kwargs is None:
         transfer_func_kwargs = {}
     counts_sc = transfer_func(sc_dis, **transfer_func_kwargs)
@@ -51,7 +51,6 @@ def assess_pseudocounts(matrix_df, sc_dis, transfer_func, transfer_func_kwargs=N
     excluded_cols = ['i.idx', 'j.idx', 'i.hmlg', 'j.hmlg', 'mask.diffM', 'mask.nghbr', 'genomic_dis']
     matrix_df_ambig = matrix_df.copy().drop(excluded_cols, axis=1)
 
-    
     mask_swap = matrix_df['i.idx_ambig'] > matrix_df['j.idx_ambig']
     if mask_swap.any():  # Ambig index pair should fall in upper triangular
         for col in ('idx_ambig', 'idx_chrom', 'idx_clr'):
@@ -69,22 +68,41 @@ def assess_pseudocounts(matrix_df, sc_dis, transfer_func, transfer_func_kwargs=N
         'mean': float(matrix_df_ambig[["snm3c", "pc_mean"]].corr(method='pearson').values[0, 1]),
         'med': float(matrix_df_ambig[["snm3c", "pc_med"]].corr(method='pearson').values[0, 1])}
     if verbose:
-        print(f"Pearson R:  mean={pearson_r['mean']:.3g}\n             med={pearson_r['med']:.3g}", flush=True)
+        print(f"Pearson R:  mean={pearson_r['mean']:.3g}\n             "
+              f"med={pearson_r['med']:.3g}", flush=True)
 
     if plot:
-        plot_counts_corr(matrix_df_ambig, pearson_r=pearson_r, perc_cutoff=perc_cutoff, agg_func=agg_func)
+        plot_counts_corr(
+            matrix_df_ambig, pearson_r=pearson_r, perc_cutoff=perc_cutoff, agg_func=agg_func,
+            hue=plot_hue)
 
     return pearson_r, (matrix_df, matrix_df_ambig)
 
 
-def plot_counts_corr(matrix_df_ambig, perc_cutoff=0.95, agg_func='mean', pearson_r=None, title=None, verbose=False):
+def plot_counts_corr(matrix_df_ambig, perc_cutoff=0.95, agg_func='mean', pearson_r=None, title=None,
+                     hue=None, alpha=0.5, verbose=False):
     xmax = matrix_df_ambig.snm3c.quantile(perc_cutoff)
     ymax = matrix_df_ambig[f"pc_{agg_func}"].quantile(perc_cutoff)
     mask = (matrix_df_ambig.snm3c <= xmax) & (matrix_df_ambig[f"pc_{agg_func}"] <= ymax)
-    
-    g = sns.jointplot(
-        data=matrix_df_ambig[mask],
-        x="snm3c", y=f"pc_{agg_func}", kind='hex', height=4)
+
+    nhue = 0
+    if hue is not None:
+        nhue = matrix_df_ambig.loc[mask, hue].drop_duplicates().size
+        if nhue == 1:
+            hue = None
+
+    if hue is None:
+        g = sns.jointplot(
+            data=matrix_df_ambig[mask], x="snm3c", y=f"pc_{agg_func}", kind='hex', height=4)
+    else:
+        palette = None
+        if nhue > 2:
+            palette = sns.diverging_palette(220, 20, s=100, l=50, center="dark", as_cmap=True)
+        g = sns.jointplot(
+            data=matrix_df_ambig[mask], x="snm3c", y=f"pc_{agg_func}", hue=hue, height=4,
+            joint_kws={'edgecolor': None, 'alpha': alpha, 'size': 10}, xlim=(0, xmax), ylim=(0, ymax),
+            palette=palette)
+        sns.move_legend(g.ax_joint, "upper left", bbox_to_anchor=(1.25, 1))
     plt.ylabel(f"Pseudo-counts\n({agg_func} across cells)")
     plt.xlabel(f"snm3C-seq counts\n(ambiguous, normalized)")
     if pearson_r is not None:
@@ -167,7 +185,7 @@ def plot_best_transfer_func(results_df, sc_dis):
 
 # ===================================================================================================================
 
-def get_lower_outliers(matrix_df_ambig, perc_cutoff=0.01, xmax=None, ymax=None, agg_func='mean'):
+def get_lower_outliers_loci(matrix_df_ambig, perc_cutoff=0.01, xmax=None, ymax=None, agg_func='mean'):
     if xmax is None:
         xmax = matrix_df_ambig.snm3c.quantile(perc_cutoff)
     if ymax is None:
@@ -176,9 +194,9 @@ def get_lower_outliers(matrix_df_ambig, perc_cutoff=0.01, xmax=None, ymax=None, 
     return matrix_df_ambig.loc[mask]
 
 
-def assess_lower_outliers(matrix_df_ambig, lengths_df, perc_cutoff=0.01, ymax=None, agg_func='mean',
-                          lengths_df_outliers=None, verbose=False, plot=True):
-    outliers = get_lower_outliers(
+def assess_lower_outliers_loci(matrix_df_ambig, lengths_df, perc_cutoff=0.01, ymax=None, agg_func='mean',
+                              lengths_df_outliers=None, verbose=False, plot=True):
+    outliers = get_lower_outliers_loci(
         matrix_df_ambig, perc_cutoff=perc_cutoff, xmax=0, ymax=ymax,
         agg_func=agg_func).sort_values(f'pc_{agg_func}')
 
@@ -232,3 +250,6 @@ def assess_lower_outliers(matrix_df_ambig, lengths_df, perc_cutoff=0.01, ymax=No
         plt.show()
 
     return outliers, lengths_df_outliers
+
+# ===================================================================================================================
+

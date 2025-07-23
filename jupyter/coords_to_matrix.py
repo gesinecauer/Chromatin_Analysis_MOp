@@ -50,7 +50,7 @@ def generate_counts_from_sc_dist(sc_dist_vec, transfer_func_kwargs, idx=None, ex
 
     # In how many cells is each pair of loci detected?
     has_data = np.invert(np.isnan(sc_dist_vec)).astype(int).sum(axis=0)
-    nonmissing = squareform(has_data)
+    nonmissing = squareform(has_data).astype(int)
 
     # Generate pseudo-counts
     if contact_th is not None:  # Use contact threshold approach
@@ -74,7 +74,7 @@ def generate_counts_from_sc_dist(sc_dist_vec, transfer_func_kwargs, idx=None, ex
         n = idx.max() + 1
         mean_counts_matrix = np.zeros((n, n))
         mean_counts_matrix[idx, idx.reshape(-1, 1)] = res
-        nonmissing_per_locus_pair = np.zeros((n, n))
+        nonmissing_per_locus_pair = np.zeros((n, n), dtype=int)
         nonmissing_per_locus_pair[idx, idx.reshape(-1, 1)] = nonmissing
     return mean_counts_matrix, nonmissing_per_locus_pair
 

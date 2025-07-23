@@ -417,12 +417,18 @@ def load(dir_matrix2d, mcool_file, lengths_file=None, resolution=2.5e6, verbose=
     if lengths_file is None:
         lengths_file = os.path.join(os.path.dirname(dir_matrix2d), 'counts.bed')
 
+    # Load info on missingness across cells
+    nonmissing_file = glob.glob(os.path.join(dir_matrix2d, '*num_nonmissing.npy'))
+    if len(nonmissing_file) != 1:
+        raise ValueError("Couldn't find unique file for nonmissingness single cells")
+    nonmissing_file = nonmissing_file[0]
+    nonmissing_matrix = np.load(nonmissing_file).astype(int)
+
     # Get single-cell distances: intra-molecular
-    sc_dis_intramol_file = glob.glob(os.path.join(dir_matrix2d, '*.distances.intramol.tsv.gz'))
+    sc_dis_intramol_file = glob.glob(os.path.join(dir_matrix2d, '*distances.intramol.tsv.gz'))
     if len(sc_dis_intramol_file) != 1:
         raise ValueError("Couldn't find unique file for intra-mol single cell distances")
     sc_dis_intramol_file = sc_dis_intramol_file[0]
-
     sc_dis = pd.read_csv(
         sc_dis_intramol_file, sep='\t', header=None, index_col=0,
         converters={0: ast.literal_eval})
@@ -433,7 +439,6 @@ def load(dir_matrix2d, mcool_file, lengths_file=None, resolution=2.5e6, verbose=
     if len(sc_dis_diffH_file) != 1:
         raise ValueError("Couldn't find unique file for intra-chrom, inter-hmlg single cell distances")
     sc_dis_diffH_file = sc_dis_diffH_file[0]
-
     sc_dis_diffH = pd.read_csv(
         sc_dis_diffH_file, sep='\t', header=None, index_col=0,
         converters={0: ast.literal_eval})
@@ -487,7 +492,8 @@ def load(dir_matrix2d, mcool_file, lengths_file=None, resolution=2.5e6, verbose=
     lengths_df.index.name = None
 
     # Setup matrix-related data for intra-chromosomal (withinter- and intra-homolog)
-    matrix_df = make_matrix_df(lengths_df)
+    matrix_df = make_matrix_df(lengths_df, matrix_dict={'nonmissing': nonmissing_matrix})
+    matrix_df['nonmissing'] = matrix_df['nonmissing'].astype(int)
     matrix_df = matrix_df[matrix_df['mask.sameC-sameH'] | matrix_df['mask.sameC-diffH']].drop(
         ['mask.sameC-sameH', 'mask.sameC-diffH', 'mask.diffC-sameH', 'mask.diffC-diffH', 'j.chrom'], axis=1).rename(
         {'i.chrom': 'chrom'}, axis=1)
