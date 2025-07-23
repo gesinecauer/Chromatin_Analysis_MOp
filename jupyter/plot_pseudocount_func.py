@@ -17,9 +17,13 @@ sns.set_theme('paper', style='white')
 def logistic(x, k, x0=0, v=1, q=1, L=1):
     assert k < 0
     tmp = -k * (x - x0)
-    res = L / np.power(1 + q * np.exp(tmp), 1 / v)
-    # res = np.exp(np.log(L) - np.log1p(q * np.exp(tmp))) / v
-    return res
+    log_bar = np.log1p(q * np.exp(tmp))
+    log_baz = log_bar / v
+    log_counts = -log_baz
+    counts = np.exp(log_counts)
+    # counts = 1 / np.power(1 + q * np.exp(tmp), 1 / v)
+    return counts
+
 
 def power(x, alpha):
     if isinstance(x, np.ndarray):
@@ -29,6 +33,7 @@ def power(x, alpha):
         return y
     else:
         return x.pow(alpha)
+
 
 def thresholded(x, cutoff):
     return x <= cutoff

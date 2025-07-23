@@ -82,8 +82,9 @@ def prep_data_for_inference(dir_matrix2d, mcool_file, lengths_file=None,
 # ===================================================================================================================
 # ===================================================================================================================
 
-def parse_X(X, infer_nu=False, infer_q=False):
+def parse_X(X, infer_nu=False, infer_q=False, infer_a=False):
     q = nu = 1
+    a = 0
     if infer_nu and infer_q:
         k, d0, nu, q = X
     elif infer_nu:
@@ -92,7 +93,7 @@ def parse_X(X, infer_nu=False, infer_q=False):
         k, d0, q = X
     else:
         k, d0 = X
-    return k, d0, nu, q
+    return k, d0, nu, q, a
 
 
 def logistic_jax(d, X, infer_nu=False, infer_q=False):
@@ -120,7 +121,6 @@ def logistic_jax(d, X, infer_nu=False, infer_q=False):
     # baz = jnp.power(bar, 1 / nu)
     # counts = 1 / baz
 
-    # counts = 1 / jnp.power(relu(1 + q * jnp.exp(tmp)), 1 / nu)  # wrong, don't use relu..? bar=0 → baz=0 → 1/baz=Inf
     # counts = 1 / jnp.power(1 + q * jnp.exp(tmp), 1 / nu)
     return counts
 
@@ -260,7 +260,7 @@ def estimate_logistic_param(data, intramol_only=False, infer_nu=False, infer_q=F
     if bounds is None:
         bounds = np.array([
             [-np.inf, 0 - buffer],  # k < 0
-            [0, 1]])  # 0 <= d0 <= 1
+            [0, 5]])  # 0 <= d0 <= 5
         bound_nu = [0 + buffer, np.inf]  # nu > 0
         bound_q = [0 + buffer, np.inf]  # q > 0
         if infer_nu:
