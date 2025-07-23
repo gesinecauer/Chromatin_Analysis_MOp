@@ -355,7 +355,7 @@ class InferArgs(object):
         self.snm3c = snm3c
         self.dis = sc_dis_arr
         if weights_exponent is None or not weights_exponent:
-            self.weights = weights
+            self.weights = None
         else:
             weights = np.power(genomic_dis, weights_exponent)
             print(f'\nWEIGHTED ~~~~~~~~~~~~~~~~~~~~~~~~~~{weights_exponent=}\n', flush=True)
