@@ -85,19 +85,21 @@ def prep_data_for_inference(dir_matrix2d, mcool_file, lengths_file=None,
 def parse_X(X, infer_nu=False, infer_q=False, infer_a=False):
     q = nu = 1
     a = 0
-    if infer_nu and infer_q:
-        k, d0, nu, q = X
-    elif infer_nu:
-        k, d0, nu = X
-    elif infer_q:
-        k, d0, q = X
-    else:
-        k, d0 = X
+    if infer_a:
+        a = X[-1]
+        X = X[:-1]
+    if infer_q:
+        q = X[-1]
+        X = X[:-1]
+    if infer_nu:
+        nu = X[-1]
+        X = X[:-1]
+    k, d0 = X
     return k, d0, nu, q, a
 
 
-def logistic_jax(d, X, infer_nu=False, infer_q=False):
-    k, d0, nu, q = parse_X(X, infer_nu=infer_nu, infer_q=infer_q)
+def logistic_jax(d, X, infer_nu=False, infer_q=False, infer_a=False):
+    k, d0, nu, q, a = parse_X(X, infer_nu=infer_nu, infer_q=infer_q, infer_a=infer_a)
 
     tmp = -k * (d - d0)
 
@@ -111,7 +113,7 @@ def logistic_jax(d, X, infer_nu=False, infer_q=False):
     # ...But bar isn't <=0 unless q<=0 and q<-1/e^tmp... so it doesn't matter, given my bound of q>0
     # # invalid value (inf) encountered in pow
     # if type(X).__name__ not in ("JVPTracer", "DynamicJaxprTracer"):
-    #     print_iter(X, infer_nu=infer_nu, infer_q=infer_q, note='AGH')
+    #     print_iter(X, infer_nu=infer_nu, infer_q=infer_q, infer_a=infer_a, note='AGH')
     #     print(f"tmp... mean={tmp.mean():<.4g}  min={tmp[jnp.isfinite(tmp)].min():<.4g}  max={tmp[jnp.isfinite(tmp)].max():<.4g}", flush=True)
     #     print(f"bar... mean={bar.mean():<.4g}  min={bar[jnp.isfinite(bar)].min():<.4g}  max={bar[jnp.isfinite(bar)].max():<.4g}", flush=True)
     
@@ -120,6 +122,9 @@ def logistic_jax(d, X, infer_nu=False, infer_q=False):
     counts = jnp.exp(log_counts)
     # baz = jnp.power(bar, 1 / nu)
     # counts = 1 / baz
+
+    if infer_a:
+        counts = a + (1 - a) * counts
 
     # counts = 1 / jnp.power(1 + q * jnp.exp(tmp), 1 / nu)
     return counts
@@ -131,7 +136,7 @@ def get_pseudocounts_scaling_factor(pseudocounts, snm3c):
 
 
 def get_bulk_pseudocounts(X, data, intramol_only=False, infer_nu=False,
-                          infer_q=False):
+                          infer_q=False, infer_a=False):
     nbins = data.snm3c.size
 
     if intramol_only:
@@ -142,7 +147,7 @@ def get_bulk_pseudocounts(X, data, intramol_only=False, infer_nu=False,
     mask_sc = dis_sc > 0
     counts_sc = jnp.where(
         mask_sc,
-        logistic_jax(dis_sc, X, infer_nu=infer_nu, infer_q=infer_q),
+        logistic_jax(dis_sc, X, infer_nu=infer_nu, infer_q=infer_q, infer_a=infer_a),
         jnp.zeros_like(dis_sc))
     mask_bulk = mask_sc.sum(axis=1)
     counts = jnp.where(
@@ -169,7 +174,8 @@ def weighted_pearsons_corr(x, y, weights=1):
 
 
 def obj_eval_pseudocounts(X, data, intramol_only=False, infer_nu=False,
-                          infer_q=False, obj_type='pearson', verbose=False):
+                          infer_q=False, infer_a=False, obj_type='pearson',
+                          verbose=False):
     if verbose:
         if type(X).__name__ == "DynamicJaxprTracer":
             print("Compiling objective function via Jax JIT...", flush=True)
@@ -186,7 +192,7 @@ def obj_eval_pseudocounts(X, data, intramol_only=False, infer_nu=False,
 
     counts = get_bulk_pseudocounts(
         X, data=data, intramol_only=intramol_only, infer_nu=infer_nu,
-        infer_q=infer_q)
+        infer_q=infer_q, infer_a=infer_a)
 
     obj = 0
     if 'pearson' in obj_type:
@@ -212,12 +218,12 @@ def obj_eval_pseudocounts(X, data, intramol_only=False, infer_nu=False,
 
 grad_eval_pseudocounts = grad(obj_eval_pseudocounts)
 obj_eval_pseudocounts_jit = jit(
-    obj_eval_pseudocounts, static_argnames=['data', 'intramol_only', 'infer_nu', 'infer_q', 'obj_type'])
+    obj_eval_pseudocounts, static_argnames=['data', 'intramol_only', 'infer_nu', 'infer_q', 'infer_a', 'obj_type'])
 grad_eval_pseudocounts_jit = grad(obj_eval_pseudocounts_jit)
 
 
 def obj_wrap(X, data, intramol_only=False, infer_nu=False, infer_q=False,
-             obj_type='pearson', jitted=False, verbose=False):
+             infer_a=False, obj_type='pearson', jitted=False, verbose=False):
     if jitted:
         objective_func = obj_eval_pseudocounts_jit
     else:
@@ -225,16 +231,16 @@ def obj_wrap(X, data, intramol_only=False, infer_nu=False, infer_q=False,
     
     obj = objective_func(
         X, data=data, intramol_only=intramol_only, infer_nu=infer_nu,
-        infer_q=infer_q, obj_type=obj_type)
+        infer_q=infer_q, infer_a=infer_a, obj_type=obj_type)
     if not isinstance(obj, float) and obj.size > 1:
         obj = sum(obj)
     if verbose:
-        print_iter(X, infer_nu=infer_nu, infer_q=infer_q, note=obj)
+        print_iter(X, infer_nu=infer_nu, infer_q=infer_q, infer_a=infer_a, note=obj)
     return obj
 
 
 def grad_wrap(X, data, intramol_only=False, infer_nu=False, infer_q=False,
-              obj_type='pearson', jitted=False, verbose=False):
+              infer_a=False, obj_type='pearson', jitted=False, verbose=False):
     if jitted:
         gradient_func = grad_eval_pseudocounts_jit
     else:
@@ -242,13 +248,12 @@ def grad_wrap(X, data, intramol_only=False, infer_nu=False, infer_q=False,
     
     return np.array(gradient_func(
         X, data=data, intramol_only=intramol_only, infer_nu=infer_nu,
-        infer_q=infer_q, obj_type=obj_type)).ravel()
+        infer_q=infer_q, infer_a=infer_a, obj_type=obj_type)).ravel()
 
 
 def estimate_logistic_param(data, intramol_only=False, infer_nu=False, infer_q=False,
-                            obj_type='pearson', init=None, bounds=None, seed=0, max_iter=1e20,
-                            factr=1e7, maxls=20, pgtol=1e-05,
-                            jitted=True, verbose=True):
+                            infer_a=False, obj_type='pearson', init=None, bounds=None, seed=0, max_iter=1e20,
+                            factr=1e7, maxls=20, pgtol=1e-05, jitted=True, verbose=True):
 
     if isinstance(obj_type, str):
         obj_type = (obj_type.lower(),)
@@ -256,37 +261,41 @@ def estimate_logistic_param(data, intramol_only=False, infer_nu=False, infer_q=F
         obj_type = tuple([x.lower() for x in obj_type])
 
     # Get bounds
-    buffer = 0.01
+    buffer = 0.0001
     if bounds is None:
         bounds = np.array([
             [-np.inf, 0 - buffer],  # k < 0
             [0, 5]])  # 0 <= d0 <= 5
         bound_nu = [0 + buffer, np.inf]  # nu > 0
         bound_q = [0 + buffer, np.inf]  # q > 0
+        bound_a = [0, 1]  # 0 <= a <= 1
         if infer_nu:
             bounds = np.concatenate([bounds, np.array(bound_nu, ndmin=2)])
         if infer_q:
             bounds = np.concatenate([bounds, np.array(bound_q, ndmin=2)])
-        bounds = np.nan_to_num(bounds, posinf=100, neginf=-100)  # XXX ************************
+        if infer_a:
+            bounds = np.concatenate([bounds, np.array(bound_a, ndmin=2)])
+        #bounds = np.nan_to_num(bounds, posinf=100, neginf=-100)  # XXX ************************
     else:
         bounds = np.array(bounds, ndmin=2, copy=None).reshape(-1, 2)
     
     # Define initial value for X
     if init is None:
         rng = np.random.default_rng(seed=seed)
-        tmp = np.nan_to_num(bounds, posinf=100, neginf=-100)
+        # tmp = np.nan_to_num(bounds, posinf=100, neginf=-100)
+        tmp = np.nan_to_num(bounds, posinf=25, neginf=-25)
         init = rng.uniform(low=tmp[:, 0], high=tmp[:, 1])
         if verbose:
-            print_iter(X=init, infer_nu=infer_nu, infer_q=infer_q, note='INIT')
+            print_iter(X=init, infer_nu=infer_nu, infer_q=infer_q, infer_a=infer_a, note='INIT')
     init = np.array(init, ndmin=1, copy=None)
 
     # Optimize
-    args = [data, intramol_only, infer_nu, infer_q, obj_type, jitted, verbose > 1]
+    args = [data, intramol_only, infer_nu, infer_q, infer_a, obj_type, jitted, verbose > 1]
     if verbose:
         print("OPTIMIZING:", flush=True)
     obj = obj_wrap(
         init, data=data, intramol_only=intramol_only, infer_nu=infer_nu, infer_q=infer_q,
-        obj_type=obj_type, jitted=False, verbose=verbose > 1)
+        infer_a=infer_a, obj_type=obj_type, jitted=False, verbose=verbose > 1)
     if max_iter == 0:
         X = init
         d = {'converged': 'N/A', 'obj': obj._value}
@@ -301,28 +310,31 @@ def estimate_logistic_param(data, intramol_only=False, infer_nu=False, infer_q=F
 
     # Add results to dict
     d['params'] = X[0] if X.size == 1 else X
-    d['k'], d['d0'], d['nu'], d['q'] = parse_X(X, infer_nu=infer_nu, infer_q=infer_q)
+    d['k'], d['d0'], d['nu'], d['q'], d['a'] = parse_X(
+        X, infer_nu=infer_nu, infer_q=infer_q, infer_a=infer_a)
     counts = get_bulk_pseudocounts(
         X, data=data, intramol_only=intramol_only, infer_nu=infer_nu,
-        infer_q=infer_q)
+        infer_q=infer_q, infer_a=infer_a)
     d['scaling_factor'] = float(get_pseudocounts_scaling_factor(counts, snm3c=data.snm3c)._value)
 
     if verbose:
         print("\nRESULTS:", flush=True)
-        print_infer_results_pseudocounts(d, infer_nu=infer_nu, infer_q=infer_q)
+        print_infer_results_pseudocounts(d, infer_nu=infer_nu, infer_q=infer_q, infer_a=infer_a)
 
     return d
 
 # ===================================================================================================================
 
-def print_iter(X, infer_nu=False, infer_q=False, note=None):
-    k, d0, nu, q = parse_X(X, infer_nu=infer_nu, infer_q=infer_q)
+def print_iter(X, infer_nu=False, infer_q=False, infer_a=False, note=None):
+    k, d0, nu, q, a = parse_X(X, infer_nu=infer_nu, infer_q=infer_q, infer_a=infer_a)
 
     to_print = f"k={k:<11.6g}  d₀={d0:<11.6g}"
     if infer_nu:
         to_print += f"  𝜈={nu:<11.6g}"
     if infer_q:
         to_print += f"  q={q:<11.6g}"
+    if infer_a:
+        to_print += f"  a={a:<11.6g}"
     if isinstance(note, (str, int)):
         to_print += f" ... {note}"
     elif note is not None:
@@ -330,13 +342,13 @@ def print_iter(X, infer_nu=False, infer_q=False, note=None):
     print(to_print, flush=True)
 
 
-def print_infer_results_pseudocounts(d, infer_nu=False, infer_q=False):
+def print_infer_results_pseudocounts(d, infer_nu=False, infer_q=False, infer_a=False):
     for k, v in d.items():
         if k in ('k', 'd0', 'nu', 'q'):
             continue
         if k == 'params':
             v = np.array(v, ndmin=1, copy=None)
-            print_iter(v, infer_nu=infer_nu, infer_q=infer_q)
+            print_iter(v, infer_nu=infer_nu, infer_q=infer_q, infer_a=infer_a)
             continue
         if k == 'grad':
             v = f"{v.max():.3g}"
@@ -523,9 +535,9 @@ def load(dir_matrix2d, mcool_file, lengths_file=None, resolution=2.5e6, verbose=
 # ===================================================================================================================
 
 def load_and_infer(dir_matrix2d, mcool_file, resolution, outdir=None, name=None,
-                   intramol_only=False, infer_nu=False, infer_q=False, obj_type='pearson',
-                   weights_exponent=None, init=None, bounds=None, seed=0, max_iter=1e20,
-                   factr=1e7, maxls=20, pgtol=1e-05, jitted=True):
+                   intramol_only=False, infer_nu=False, infer_q=False, infer_a=False,
+                   obj_type='pearson', weights_exponent=None, init=None, bounds=None, seed=0,
+                   max_iter=1e20, factr=1e7, maxls=20, pgtol=1e-05, jitted=True):
 
     data_outdir = outdir
     if data_outdir is not None and (not re.search(r'(.+/|^)nobackup(/.*|$)', data_outdir)):
@@ -557,7 +569,7 @@ def load_and_infer(dir_matrix2d, mcool_file, resolution, outdir=None, name=None,
     print("\nINFERRING WITH:\n" + df_input.value.to_string(float_format=lambda x: f"{x:g}") + "\n", flush=True)
     d = estimate_logistic_param(
         data=data, intramol_only=intramol_only, infer_nu=infer_nu, infer_q=infer_q,
-        obj_type=obj_type, init=init, bounds=bounds, seed=seed, max_iter=max_iter,
+        infer_a=infer_a, obj_type=obj_type, init=init, bounds=bounds, seed=seed, max_iter=max_iter,
         jitted=jitted, factr=factr, maxls=maxls, pgtol=pgtol, verbose=2)
     print(d['params'], flush=True)
 
@@ -585,6 +597,7 @@ def main():
     parser.add_argument('--intramol_only', default=False, action='store_true')
     parser.add_argument('--infer_nu', default=False, action='store_true')
     parser.add_argument('--infer_q', default=False, action='store_true')
+    parser.add_argument('--infer_a', default=False, action='store_true')
     parser.add_argument("--obj_type", type=str, default='rmse')
     parser.add_argument("--weights_exponent", default=None, type=int)
 
@@ -606,8 +619,8 @@ def main():
     load_and_infer(
         args.dir_matrix2d, mcool_file=args.mcool_file, resolution=args.resolution_mb * 1e6,
         outdir=args.outdir, name=args.name, intramol_only=args.intramol_only,
-        infer_nu=args.infer_nu, infer_q=args.infer_q, obj_type=args.obj_type,
-        weights_exponent=args.weights_exponent,
+        infer_nu=args.infer_nu, infer_q=args.infer_q, infer_a=args.infer_a,
+        obj_type=args.obj_type, weights_exponent=args.weights_exponent,
         seed=args.seed, max_iter=args.max_iter, factr=args.factr, maxls=args.maxls,
         pgtol=args.pgtol, jitted=args.jitted)
 

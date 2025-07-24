@@ -14,7 +14,7 @@ import seaborn as sns
 sns.set_theme('paper', style='white')
 
 
-def logistic(x, k, x0=0, v=1, q=1, L=1):
+def logistic_old(x, k, x0=0, v=1, q=1, L=1, a=0):
     assert k < 0
     tmp = -k * (x - x0)
     log_bar = np.log1p(q * np.exp(tmp))
@@ -22,6 +22,21 @@ def logistic(x, k, x0=0, v=1, q=1, L=1):
     log_counts = -log_baz
     counts = np.exp(log_counts)
     # counts = 1 / np.power(1 + q * np.exp(tmp), 1 / v)
+    if a != 0:
+        counts = a + (1 - a) * counts
+    return counts
+
+
+def logistic(d, k, d0=0, nu=1, q=1, L=1, a=0):
+    assert k < 0
+    tmp = -k * (d - d0)
+    log_bar = np.log1p(q * np.exp(tmp))
+    log_baz = log_bar / nu
+    log_counts = -log_baz
+    counts = np.exp(log_counts)
+    # counts = 1 / np.power(1 + q * np.exp(tmp), 1 / nu)
+    if a != 0:
+        counts = a + (1 - a) * counts
     return counts
 
 
@@ -112,7 +127,7 @@ def plot_counts_corr(matrix_df_ambig, perc_cutoff=0.95, agg_func='mean', pearson
     plt.xlabel(f"snm3C-seq counts\n(ambiguous, normalized)")
     if pearson_r is not None:
         if title is None:
-            title = f"{pearson_r['func']}\n({pearson_r['func_kwargs']})"
+            title = f"{pearson_r['func']}\n({pearson_r['func_kwargs'].replace('nu', '𝜈')})"
         title = f"{title}\nR={pearson_r[agg_func]:.3g}"
     if title is not None:
         g.fig.suptitle(title, y=1.07)
@@ -150,8 +165,8 @@ def plot_transfer_func(sc_dis, func, func_kwargs=None, title=None, xmax=None, ma
     else:
         y = func(x, **func_kwargs)
 
-    info = [func.__name__, '(' + ', '.join(
-            [f"{k}={v:.4g}" for k, v in func_kwargs.items()]) + ')']
+    info = [func.__name__, '(' + ', '.join([f"{k}={v:.4g}".replace(
+        'nu', '𝜈') for k, v in func_kwargs.items()]) + ')']
 
     if make_fig:
         fig = plt.figure()
