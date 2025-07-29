@@ -6,7 +6,7 @@ import re
 import seaborn as sns
 import matplotlib.pyplot as plt
 
-import jax.numpy as ag_np
+import jax.numpy as jnp
 from jax import grad
 from scipy import optimize
 from pastis.optimization.likelihoods import poisson_nll
@@ -197,18 +197,30 @@ def estimate_alphas_from_true_dis(matrix_df, num_infer=10, use_poisson=True, int
 
 def estimate_beta(alphas, counts, dis, mask_intra, use_poisson=False, mods=[], verbose=False):
     if alphas.size == 1:
-        beta = ag_np.sum(counts) / ag_np.sum(ag_np.power(dis, alphas))
+        dis_alpha = jnp.power(dis, alphas)
+        if use_poisson:
+            beta = jnp.sum(counts) / jnp.sum(dis_alpha)
+        else:
+            beta = jnp.sum(dis_alpha * counts) / jnp.sum(jnp.square(dis_alpha))
         return beta
+
     alpha_intra, alpha_inter = alphas
-    dis_alpha_intra = ag_np.sum(ag_np.power(dis[mask_intra], alpha_intra))
     if 'beta_from_intra_only' in mods:
-        beta = ag_np.sum(counts[mask_intra]) / dis_alpha_intra
+        counts_tmp = counts[mask_intra]
+        dis_alpha_tmp = jnp.power(dis[mask_intra], alpha_intra)
     else:
-        dis_alpha_inter = ag_np.sum(ag_np.power(dis[~mask_intra], alpha_inter))
-        beta = ag_np.sum(counts) / (dis_alpha_intra + dis_alpha_inter)
-    if verbose:
-        if verbose > 1:
-            print(f"\nβ={beta:g}\tINTRA={dis_alpha_intra:.3g}\tinter={dis_alpha_inter:.3g}")
+        counts_tmp = counts
+        dis_alpha_tmp = jnp.power(dis, jnp.where(
+            mask_intra, alpha_intra, alpha_inter))
+    if use_poisson:
+        beta = jnp.sum(counts_tmp) / jnp.sum(dis_alpha_tmp)
+    else:
+        beta = jnp.sum(dis_alpha_tmp * counts_tmp) / jnp.sum(jnp.square(dis_alpha_tmp))
+
+    if verbose > 1:
+        dis_alpha_intra = jnp.sum(jnp.power(dis[mask_intra], alpha_intra))
+        dis_alpha_inter = jnp.sum(jnp.power(dis[~mask_intra], alpha_inter))
+        print(f"\nβ={beta:g}\tINTRA={dis_alpha_intra:.3g}\tinter={dis_alpha_inter:.3g}")
     return beta
 
 
@@ -216,13 +228,13 @@ def fit_alpha_obj(alphas, counts, dis, mask_intra, use_poisson=False, mods=[], v
     beta = estimate_beta(alphas, counts=counts, dis=dis, mask_intra=mask_intra, mods=mods)
 
     if alphas.size == 1:
-        lambda_pois = beta * ag_np.power(dis, alphas)
+        lambda_pois = beta * jnp.power(dis, alphas)
         if len(lambda_pois.shape) > 1:
-            lambda_pois = ag_np.sum(lambda_pois, axis=1)
+            lambda_pois = jnp.sum(lambda_pois, axis=1)
         if use_poisson:
             obj = poisson_nll(counts, lambda_pois=lambda_pois)
         else:
-            obj = ag_np.mean(ag_np.square(lambda_pois - counts))
+            obj = jnp.mean(jnp.square(lambda_pois - counts))
         if verbose:
             print(f"α={alphas[0]:.3f}\tβ={beta.round():.3g}\tobj={obj.round():g}", flush=True)
         return obj
@@ -231,24 +243,24 @@ def fit_alpha_obj(alphas, counts, dis, mask_intra, use_poisson=False, mods=[], v
     num_intra = mask_intra.sum()
     num_inter = (~mask_intra).sum()
 
-    lambda_pois_intra = beta * ag_np.power(dis[mask_intra], alpha_intra)
+    lambda_pois_intra = beta * jnp.power(dis[mask_intra], alpha_intra)
     if len(lambda_pois_intra.shape) > 1:
-        lambda_pois_intra = ag_np.sum(lambda_pois_intra, axis=1)
+        lambda_pois_intra = jnp.sum(lambda_pois_intra, axis=1)
     if use_poisson:
         obj_intra = poisson_nll(counts[mask_intra], lambda_pois=lambda_pois_intra) * num_intra
     else:
-        obj_intra = ag_np.sum(ag_np.square(lambda_pois_intra - counts[mask_intra]))
+        obj_intra = jnp.sum(jnp.square(lambda_pois_intra - counts[mask_intra]))
 
     if 'alpha_from_intra_only' in mods:
         obj = obj_intra / num_intra
     else:
-        lambda_pois_inter = beta * ag_np.power(dis[~mask_intra], alpha_inter)
+        lambda_pois_inter = beta * jnp.power(dis[~mask_intra], alpha_inter)
         if len(lambda_pois_inter.shape) > 1:
-            lambda_pois_inter = ag_np.sum(lambda_pois_inter, axis=1)
+            lambda_pois_inter = jnp.sum(lambda_pois_inter, axis=1)
         if use_poisson:
             obj_inter = poisson_nll(counts[~mask_intra], lambda_pois=lambda_pois_inter) * num_inter
         else:
-            obj_inter = ag_np.sum(ag_np.square(lambda_pois_inter - counts[~mask_intra]))
+            obj_inter = jnp.sum(jnp.square(lambda_pois_inter - counts[~mask_intra]))
 
         # FIXME bug below - MSE & poisson obj treated differently
         if 'weight_equally' in mods:
