@@ -15,18 +15,29 @@ from topsy.analysis.compare_distances import make_matrix_df
 
 
 def logistic(d, k, d0, nu=1, q=1):
-    tmp = -k * (d - d0)
-    if nu == 1:
-        counts = 1 / (1 + q * np.exp(tmp))
-    else:
-        counts = 1 / np.power(1 + q * np.exp(tmp), 1 / nu)
+    counts = np.exp(-np.log1p(q * np.exp(-k * (d - d0))) / nu)
+
+    # counts = -k * (d - d0)
+    # counts = np.log1p(q * np.exp(counts))
+    # counts *= -1 / nu
+    # counts = np.exp(counts)
+
+    # tmp = -k * (d - d0)
+    # log_bar = np.log1p(q * np.exp(tmp))
+    # log_baz = log_bar / nu
+    # log_counts = -log_baz
+    # counts = np.exp(log_counts)
+    # # bar = 1 + q * np.exp(tmp)
+    # # baz = np.power(bar, 1 / nu)
+    # # counts = 1 / baz
+
     return counts
 
 
-def get_transfer_func_params(contact_th=None, alpha=None, k=None, d0=None, sc_dist_vec=None):
-    if (contact_th is None) + (alpha is None) + (k is None or d0 is None) != 2:
-        raise ValueError("Must input either: \n- contact_th\n- alpha\n- k & d0."
-                         f"\nInput: {contact_th=:g}, {alpha=:g}, {k=:g}, {d0=:g}")
+def get_transfer_func_params(contact_th=None, alpha=None, k=None, d0=None, nu=None, sc_dist_vec=None):
+    if (contact_th is None) + (alpha is None) + (k is None or d0 is None or nu is None) != 2:
+        raise ValueError("Must input either: \n- contact_th\n- alpha\n- k, d0, & nu."
+                         f"\nInput: {contact_th=}, {alpha=}, {k=}, {d0=}, {nu=}")
 
     if sc_dist_vec is not None:
         if (contact_th is not None) and (
@@ -36,17 +47,19 @@ def get_transfer_func_params(contact_th=None, alpha=None, k=None, d0=None, sc_di
     if alpha is not None:
         if alpha > -1 or alpha < -6:
             raise ValueError(f"Alpha should be in the range [-6, -1], inputted {alpha=:g}")
-    if k is not None and d0 is not None:
-        if d0 < 0 or d0 > 1:
-            raise ValueError(f"d0 should be in the range [0μm, 1μm] , inputted {d0=:g}")
+    if not (k is None or d0 is None or nu is None):
+        if d0 < 0 or d0 > 10:
+            raise ValueError(f"d0 should be in the range [0μm, 10μm] , inputted {d0=:g}")
         if k >= 0:
             raise ValueError(f"k should be < 0, inputted {k=:g}")
+        if nu <= 0:
+            raise ValueError(f"nu should be > 0, inputted {nu=:g}")
     
-    return contact_th, alpha, k, d0
+    return contact_th, alpha, k, d0, nu
 
 
 def generate_counts_from_sc_dist(sc_dist_vec, transfer_func_kwargs, idx=None, exclude_missing_loci=False):
-    contact_th, alpha, k, d0 = get_transfer_func_params(**transfer_func_kwargs, sc_dist_vec=None)
+    contact_th, alpha, k, d0, nu = get_transfer_func_params(**transfer_func_kwargs, sc_dist_vec=None)
 
     # In how many cells is each pair of loci detected?
     has_data = np.invert(np.isnan(sc_dist_vec)).astype(int).sum(axis=0)
@@ -61,7 +74,7 @@ def generate_counts_from_sc_dist(sc_dist_vec, transfer_func_kwargs, idx=None, ex
         print(f"{counts_vec.max()=:g}", flush=True)
         res = squareform(counts_vec)
     else:  # Generate counts via logistic transfer function
-        counts_vec = np.nanmean(logistic(sc_dist_vec, k=k, d0=d0), axis=0)
+        counts_vec = np.nanmean(logistic(sc_dist_vec, k=k, d0=d0, nu=nu), axis=0)
         res = squareform(counts_vec)
 
     # Add missing data if desired
@@ -140,7 +153,7 @@ def save_sc_dis_per_locus(sc_dist_vec, idx, outfile, lengths_df):
 
 
 def process_sc_distances(sc_dna_coords, idx, outdir, lengths_df, transfer_func_kwargs, name=None, redo=False):
-    contact_th, alpha, k, d0 = get_transfer_func_params(**transfer_func_kwargs)  # Check params
+    contact_th, alpha, k, d0, nu = get_transfer_func_params(**transfer_func_kwargs)  # Check params
 
     os.makedirs(outdir, exist_ok=True)
     if name is not None and name != "":
@@ -158,7 +171,7 @@ def process_sc_distances(sc_dna_coords, idx, outdir, lengths_df, transfer_func_k
     elif alpha is not None:
         mean_counts_matrix_file = os.path.join(outdir, f'{name}counts.mean.alpha{alpha:.4g}.npy')
     else:
-        mean_counts_matrix_file = os.path.join(outdir, f'{name}counts.mean.k{k:.4g}_m{d0:.4g}.npy')
+        mean_counts_matrix_file = os.path.join(outdir, f'{name}counts.mean.k{k:.4g}_m{d0:.4g}_v{nu:.4g}.npy')
     nonmissing_per_locus_pair_file = os.path.join(outdir, f'{name}num_nonmissing.npy')
     sc_dist_per_locus_file = os.path.join(outdir, f'{name}distances.per_locus.tsv.gz')
     sc_dist_intramol_file = os.path.join(outdir, f'{name}distances.intramol.tsv.gz')
@@ -247,9 +260,9 @@ def add_missing_loci(df, spacing=2.5):
 
 
 def process_sc_dna_coords(input_file, outdir=None, min_nonmissing_per_phased_locus=0.05, nmol_per_hmlg_ratio=1,
-                          spacing=2.5, contact_th=None, alpha=None, k=None, d0=None, redo=False, name=None, verbose=False):
+                          spacing=2.5, contact_th=None, alpha=None, k=None, d0=None, nu=None, redo=False, name=None, verbose=False):
 
-    transfer_func_kwargs = dict(contact_th=contact_th, alpha=alpha, k=k, d0=d0)
+    transfer_func_kwargs = dict(contact_th=contact_th, alpha=alpha, k=k, d0=d0, nu=nu)
     get_transfer_func_params(**transfer_func_kwargs)  # Check params
 
     # Assign defaults
@@ -335,6 +348,7 @@ def main():
     parser.add_argument("--alpha", type=float)
     parser.add_argument("--k", type=float)
     parser.add_argument("--d0", type=float)
+    parser.add_argument("--nu", type=float)
     # parser.add_argument("--chrom", type=str, nargs='+')
     parser.add_argument('--verbose', default=True, action='store_true')
     parser.add_argument('--silent', dest='verbose', default=True, action='store_false')
@@ -351,7 +365,7 @@ def main():
     process_sc_dna_coords(
         input_file=args.data, min_nonmissing_per_phased_locus=args.min_nonmissing_per_phased_locus,
         nmol_per_hmlg_ratio=nmol_per_hmlg_ratio, spacing=args.spacing, outdir=args.outdir, name=name,
-        contact_th=args.contact_th, alpha=args.alpha, k=args.k, d0=args.d0, verbose=args.verbose)
+        contact_th=args.contact_th, alpha=args.alpha, k=args.k, d0=args.d0, nu=args.nu, verbose=args.verbose)
 
 
 if __name__ == "__main__":
