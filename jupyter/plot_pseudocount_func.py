@@ -43,14 +43,16 @@ def thresholded(x, cutoff):
 # ===================================================================================================================
 
 def assess_pseudocounts(matrix_df, sc_dis, transfer_func, transfer_func_kwargs=None, plot=False,
-                        perc_cutoff=0.95, agg_func='mean', plot_hue=None, verbose=False):
+                        perc_cutoff=0.95, agg_func='mean', plot_hue=None, remove_null_snm3c=True, verbose=False):
     if transfer_func_kwargs is None:
         transfer_func_kwargs = {}
     counts_sc = transfer_func(sc_dis, **transfer_func_kwargs)
     counts = pd.concat([
         counts_sc.mean(axis=1).to_frame().rename({0: 'pc_mean'}, axis=1),
         counts_sc.median(axis=1).to_frame().rename({0: 'pc_med'}, axis=1)], axis=1)
-    matrix_df = matrix_df[matrix_df.snm3c.notnull()].join(counts, how='inner')
+    matrix_df = matrix_df.join(counts, how='inner')
+    if remove_null_snm3c:
+        matrix_df = matrix_df[matrix_df.snm3c.notnull()]
 
     # Ambiguate matrix_df
     grp_cols = ['i.idx_ambig', 'j.idx_ambig', 'chrom', 'i.idx_chrom', 'j.idx_chrom',
@@ -66,7 +68,7 @@ def assess_pseudocounts(matrix_df, sc_dis, transfer_func, transfer_func_kwargs=N
     matrix_df_ambig = matrix_df_ambig[  # Remove diagonal of ambig
         matrix_df_ambig['i.idx_ambig'] != matrix_df_ambig['j.idx_ambig']]
     assert (matrix_df_ambig.groupby(grp_cols).pc_mean.count() == 4).all()
-    matrix_df_ambig = matrix_df_ambig.groupby(grp_cols).mean()
+    matrix_df_ambig = matrix_df_ambig.groupby(grp_cols, dropna=False).mean()
     matrix_df_ambig.reset_index(level=np.arange(len(grp_cols)).tolist(), inplace=True)
 
     pearson_r = {

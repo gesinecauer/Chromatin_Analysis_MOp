@@ -495,9 +495,41 @@ def ambiguate_matrix_df_for_inference(matrix_df, extra_grouping_cols=None):
     return matrix_df_ambig, snm3c, dis_idx, genomic_dis
 
 
-def load(dir_matrix2d, mcool_file, lengths_file=None, resolution=2.5, verbose=True):
-    if lengths_file is None:
-        lengths_file = os.path.join(os.path.dirname(dir_matrix2d), 'counts.bed')
+def load_snm3c(mcool_file, resolution=2.5, normalize='auto', verbose=True):
+    if isinstance(normalize, str) and normalize.lower() == 'auto':
+        normalize = True if 'Raw.' in mcool_file else False
+    if verbose:
+        if normalize:
+            print("Loading and normalizing snm3c-seq data...", flush=True)
+        else:
+            print("Loading snm3c-seq data, skipping normalization...", flush=True)
+
+    # Load snm3c-seq data via cooler
+    resolution_bp = int(resolution * 1e6)
+    uri = f'{mcool_file}::/resolutions/{resolution_bp:d}'
+    clr = cooler.Cooler(uri)
+    snm3c = clr.matrix(balance=normalize)[:, :]
+    np.fill_diagonal(snm3c, np.nan)
+    if clr.storage_mode != 'symmetric-upper':
+        if not np.all(np.isnan(snm3c[np.tril_indices(snm3c.shape[0])])):
+            warnings.warn("snm3C-seq cooler matrix is not symmetric, has different values below diagonal")
+        snm3c += snm3c.T
+    clr_bins = clr.bins()[:]
+    assert len(clr_bins) == snm3c.shape[0]
+
+    lengths_clr = clr_bins.groupby('chrom', observed=True).apply(
+        lambda x: int(round(x.end.max() / resolution_bp)), include_groups=False).drop('chrX')
+    assert (np.round((clr.chromsizes / resolution_bp)).drop('chrX') - lengths_clr == 0).all()
+
+    return snm3c, clr_bins, lengths_clr
+
+
+def load(dir_matrix2d, mcool_file, lengths_file=None, resolution=2.5, normalize_snm3c='auto', verbose=True):
+    # Load snm3c-seq data via cooler
+    snm3c, clr_bins, lengths_clr = load_snm3c(
+        mcool_file, resolution=resolution, normalize=normalize_snm3c, verbose=verbose)
+    clr_bins['mid'] = clr_bins[['start', 'end']].mean(axis=1).round().astype(int)
+    clr_bins = clr_bins.reset_index().rename({'index': 'idx_clr'}, axis=1)
 
     # Load info on missingness across cells
     nonmissing_file = glob.glob(os.path.join(dir_matrix2d, '*num_nonmissing.npy'))
@@ -529,38 +561,18 @@ def load(dir_matrix2d, mcool_file, lengths_file=None, resolution=2.5, verbose=Tr
     # Single-cell distances: combine intra-chromosomal data
     sc_dis = pd.concat([sc_dis, sc_dis_diffH])
 
-    # Load snm3c-seq data via cooler
-    resolution_bp = int(resolution * 1e6)
-    uri = f'{mcool_file}::/resolutions/{resolution_bp:d}'
-    clr = cooler.Cooler(uri)
-    snm3c = clr.matrix(balance=True if 'Raw.' in mcool_file else False)[:, :]
-    np.fill_diagonal(snm3c, np.nan)
-    if clr.storage_mode != 'symmetric-upper':
-        if not np.all(np.isnan(snm3c[np.tril_indices(snm3c.shape[0])])):
-            warnings.warn("snm3C-seq cooler matrix is not symmetric, has different values below diagonal")
-        snm3c += snm3c.T
-
-    clr_bins = clr.bins()[:].reset_index().rename({'index': 'idx_clr'}, axis=1)
-    clr_bins['mid'] = clr_bins[['start', 'end']].mean(axis=1).round().astype(int)
-    assert len(clr_bins) == snm3c.shape[0]
-
-    nbins_clr = clr_bins.groupby('chrom', observed=True).size().sort_values(
-        ascending=False).drop('chrX')
-    lengths_clr = clr_bins.groupby('chrom', observed=True).apply(
-        lambda x: int(round(x.end.max() / resolution_bp)), include_groups=False).drop('chrX')
-    assert (np.round((clr.chromsizes / resolution_bp)).drop('chrX') - lengths_clr == 0).all()
-
-
     # Setup chromosome lengths data
+    if lengths_file is None:
+        lengths_file = os.path.join(os.path.dirname(dir_matrix2d), 'counts.bed')
     lengths_df = pd.read_csv(lengths_file, sep='\t')
     lengths_df.columns = [c.strip('#') for c in lengths_df.columns]
     for col in ['start', 'end', 'mid']:  # Round to nearest 10,000bp
         lengths_df[col] = lengths_df[col].round(-4)
-
     n = len(lengths_df)
     lengths_s = lengths_df.groupby('chrom').size().sort_values(
         ascending=False)
 
+    # Compare to and merge with chromosome lengths/bins data from snm3c
     lengths_compare = pd.concat([
         lengths_s.to_frame().rename({0: 'merfish'}, axis=1),
         lengths_clr.to_frame().rename({0: 'snm3c'}, axis=1)], axis=1)
@@ -572,24 +584,23 @@ def load(dir_matrix2d, mcool_file, lengths_file=None, resolution=2.5, verbose=Tr
     lengths_df.index = lengths_df.idx_genome
     lengths_df.index.name = None
 
-    # Setup matrix-related data for intra-chromosomal (withinter- and intra-homolog)
+    # Setup matrix-related data for intra-chromosomal (with inter- and intra-homolog)
     matrix_df = make_matrix_df(lengths_df, matrix_dict={'nonmissing': nonmissing_matrix})
     matrix_df['nonmissing'] = matrix_df['nonmissing'].astype(int)
     matrix_df = matrix_df[matrix_df['mask.sameC-sameH'] | matrix_df['mask.sameC-diffH']].drop(
         ['mask.sameC-sameH', 'mask.sameC-diffH', 'mask.diffC-sameH', 'mask.diffC-diffH', 'j.chrom'], axis=1).rename(
         {'i.chrom': 'chrom'}, axis=1)
+    matrix_df['genomic_dis_ambig'] = (matrix_df['i.idx_ambig'] - matrix_df['j.idx_ambig']).abs()
+
+    # Add snm3c-seq data to matrix_df
     matrix_df['i.idx_clr'] = lengths_df.loc[matrix_df['i.idx_ambig'], 'idx_clr'].values.ravel()
     matrix_df['j.idx_clr'] = lengths_df.loc[matrix_df['j.idx_ambig'], 'idx_clr'].values
-
     mask = matrix_df['i.idx_clr'].notnull() & matrix_df['j.idx_clr'].notnull()
     matrix_df.loc[mask, 'snm3c'] = snm3c[matrix_df.loc[mask, 'i.idx_clr'].astype(int), matrix_df.loc[mask, 'j.idx_clr'].astype(int)]
     matrix_df.loc[matrix_df['i.idx_ambig'] == matrix_df['j.idx_ambig'], 'snm3c'] = np.nan
-
+    
     # Filter for locus pairs present in single-cell distances
     matrix_df = matrix_df.loc[matrix_df.index.isin(sc_dis.index)]
-
-    # Genomic distances, including for inter-homolog
-    matrix_df['genomic_dis_ambig'] = (matrix_df['i.idx_ambig'] - matrix_df['j.idx_ambig']).abs()
 
     return matrix_df, sc_dis, lengths_df
 
