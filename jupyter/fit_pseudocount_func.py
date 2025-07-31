@@ -509,17 +509,26 @@ def load_snm3c(mcool_file, resolution=2.5, normalize='auto', verbose=True):
     uri = f'{mcool_file}::/resolutions/{resolution_bp:d}'
     clr = cooler.Cooler(uri)
     snm3c = clr.matrix(balance=normalize)[:, :]
-    np.fill_diagonal(snm3c, np.nan)
+    np.fill_diagonal(snm3c, 0)
     if clr.storage_mode != 'symmetric-upper':
-        if not np.all(np.isnan(snm3c[np.tril_indices(snm3c.shape[0])])):
+        if not np.all(np.isnan(snm3c[np.tril_indices(snm3c.shape[0])]) | (snm3c[np.tril_indices(snm3c.shape[0])] == 0)):
             warnings.warn("snm3C-seq cooler matrix is not symmetric, has different values below diagonal")
+        snm3c[np.tril_indices(snm3c.shape[0])] = 0
         snm3c += snm3c.T
+    nan_loci_clr = np.nansum(snm3c, axis=0) == 0
+    snm3c[nan_loci_clr, :] = np.nan
+    snm3c[:, nan_loci_clr] = np.nan
+    np.fill_diagonal(snm3c, np.nan)
+        
     clr_bins = clr.bins()[:]
     assert len(clr_bins) == snm3c.shape[0]
 
     lengths_clr = clr_bins.groupby('chrom', observed=True).apply(
-        lambda x: int(round(x.end.max() / resolution_bp)), include_groups=False).drop('chrX')
-    assert (np.round((clr.chromsizes / resolution_bp)).drop('chrX') - lengths_clr == 0).all()
+        lambda x: int(np.ceil(x.end.max() / resolution_bp)), include_groups=False).drop('chrX')
+    assert (np.ceil((clr.chromsizes / resolution_bp)).drop('chrX') == lengths_clr).all()
+    assert (clr_bins.groupby('chrom', observed=True).size().drop('chrX') == lengths_clr).all()
+
+    clr_bins['mid'] = clr_bins.start + int(round(resolution / 2 * 1e6))
 
     return snm3c, clr_bins, lengths_clr
 
@@ -528,7 +537,6 @@ def load(dir_matrix2d, mcool_file, lengths_file=None, resolution=2.5, normalize_
     # Load snm3c-seq data via cooler
     snm3c, clr_bins, lengths_clr = load_snm3c(
         mcool_file, resolution=resolution, normalize=normalize_snm3c, verbose=verbose)
-    clr_bins['mid'] = clr_bins[['start', 'end']].mean(axis=1).round().astype(int)
     clr_bins = clr_bins.reset_index().rename({'index': 'idx_clr'}, axis=1)
 
     # Load info on missingness across cells

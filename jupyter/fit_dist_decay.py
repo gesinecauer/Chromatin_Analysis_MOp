@@ -36,7 +36,7 @@ def agg_across_genomic_dist(df, min_n=None):
     return res
 
 
-def get_genomic_dist_by_cell(sc_dis_intramol, min_n=None, dis_exp=-1):
+def get_dist3d_by_genomic_dist(sc_dis_intramol, min_n=None, dis_exp=-1):
     sc_invdis_intramol = sc_dis_intramol.pow(dis_exp)
     sc_invdis_intramol.index = [j - i for i, j in sc_invdis_intramol.index]
     sc_invdis_intramol.columns.name = 'cell_num'
@@ -49,7 +49,7 @@ def get_genomic_dist_by_cell(sc_dis_intramol, min_n=None, dis_exp=-1):
 def get_counts_by_genomic_dist(matrix_df_ambig, min_n=None, counts_col='pc_mean'):
     counts_intramol = matrix_df_ambig.rename(
         {'genomic_dis_ambig': 'genomic_dis'}, axis=1, errors='ignore').set_index(
-        'genomic_dis')[counts_col]
+        'genomic_dis')[[counts_col]]
     counts_intramol.columns.name = 'cell_num'
     counts_intramol.sort_index(inplace=True)
     counts_by_s = counts_intramol.groupby(level=0).apply(agg_across_genomic_dist, min_n=min_n)
