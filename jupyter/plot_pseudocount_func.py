@@ -71,9 +71,13 @@ def assess_pseudocounts(matrix_df, sc_dis, transfer_func, transfer_func_kwargs=N
     matrix_df_ambig = matrix_df_ambig.groupby(grp_cols, dropna=False).mean()
     matrix_df_ambig.reset_index(level=np.arange(len(grp_cols)).tolist(), inplace=True)
 
+    if transfer_func.__name__ == 'sum_logistic':
+        func_kwargs_str = 'sum'
+    else:
+        func_kwargs_str = ', '.join([f"{k}={v:.4g}" for k, v in transfer_func_kwargs.items()])
     pearson_r = {
         'func': transfer_func.__name__,
-        'func_kwargs': ', '.join([f"{k}={v:.4g}" for k, v in transfer_func_kwargs.items()]),
+        'func_kwargs': func_kwargs_str,
         'mean': float(matrix_df_ambig[["snm3c", "pc_mean"]].corr(method='pearson').values[0, 1]),
         'med': float(matrix_df_ambig[["snm3c", "pc_med"]].corr(method='pearson').values[0, 1])}
     if verbose:
@@ -155,8 +159,11 @@ def plot_transfer_func(sc_dis, func, func_kwargs=None, title=None, xmax=None, ma
     else:
         y = func(x, **func_kwargs)
 
-    info = [func.__name__, '(' + ', '.join([f"{k}={v:.4g}".replace(
-        'nu=', r'$v$=') for k, v in func_kwargs.items()]) + ')']
+    if func.__name__ == 'sum_logistic':
+        info = func.__name__ 
+    else:
+        info = [func.__name__, '(' + ', '.join([f"{k}={v:.4g}".replace(
+            'nu=', r'$v$=') for k, v in func_kwargs.items()]) + ')']
 
     if make_fig:
         fig = plt.figure()

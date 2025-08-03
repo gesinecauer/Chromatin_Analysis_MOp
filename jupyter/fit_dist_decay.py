@@ -57,6 +57,17 @@ def get_counts_by_genomic_dist(matrix_df_ambig, min_n=None, counts_col='pc_mean'
     return counts_by_s
 
 
+def get_counts_by_genomic_dist_perchrom(matrix_df_ambig, min_n=None, counts_col='pc_mean'):
+    counts_intramol = matrix_df_ambig.rename(
+        {'genomic_dis_ambig': 'genomic_dis'}, axis=1, errors='ignore').set_index(
+        ['chrom', 'genomic_dis'])[[counts_col]]
+    counts_intramol.columns.name = 'cell_num'
+    counts_intramol.sort_index(inplace=True)
+    counts_by_s = counts_intramol.groupby(level=[0, 1]).apply(agg_across_genomic_dist, min_n=min_n)
+    counts_by_s.index.names = ['chrom', 'genomic_dis', 'desc']
+    return counts_by_s
+
+
 def smooth_frequency(df_freq, sigma_log10=0.1):
     df_freq_smooth = []
     
@@ -91,7 +102,8 @@ def smooth_frequency(df_freq, sigma_log10=0.1):
 
 def estimate_exponent_manual(s_by_cell_smooth_agg, x0=None, bounds=(-10, 10), seed=0,
                              min_genomic_dis=None, max_genomic_dis='default',
-                             max_iter=1e20, resolution_bp=2.5e6, verbose=True, plot=True, as_counts=False, dis_exp=-1):
+                             max_iter=1e20, resolution_bp=2.5e6, verbose=True, plot=True,
+                             title=None, as_counts=False, dis_exp=-1):
 
     dist_decay = s_by_cell_smooth_agg.smoothed_freq.copy()
     dist_decay.index *= int(resolution_bp)
@@ -127,25 +139,30 @@ def estimate_exponent_manual(s_by_cell_smooth_agg, x0=None, bounds=(-10, 10), se
             print(f"est alpha = B/v = {est_alpha:.3g}")
 
     if plot:
+        plt.style.use('seaborn-v0_8-poster')
+
         if as_counts:
             ylabel = 'Counts'
-            line_label = r"$c \sim s^{" + f"{exponent:.3g}" + r"}$"
+            line_fit_label = r"$c \sim s^{" + f"{exponent:.3g}" + r"}$"
+            line_data_label = "Counts data"
         else:
             ylabel = 'Inverse of 3D\n' + r'distances $(d^{' + f"{dis_exp:g}" '})$'
-            line_label = r"$d \sim s^{" + f"{exponent:.3g}" + r"}$"
+            line_fit_label = r"$d \sim s^{" + f"{exponent:.3g}" + r"}$"
+            line_data_label = "MERFISH data"
         
         f, ax = plt.subplots(figsize=[6.4, 4.8])
         ax.loglog(
             s_by_cell_smooth_agg.index.values * 2.5e6,
             s_by_cell_smooth_agg.smoothed_freq.values,
-            label='MERFISH data')
+            label=line_data_label)
         ax.set(xlabel='Separation, bp ($s$)',  ylabel=ylabel)
         ax.set_aspect(1.0)
         ax.grid(lw=0.5)
-        ax.loglog(x, y, color='black', label=line_label)
+        ax.loglog(x, y, color='black', label=line_fit_label)
 
         # ax.set_ylim()
-        ax.set_title(f"")
+        if title is not None:
+            ax.set_title(title)
         plt.legend()
         f.tight_layout()
         plt.show()
