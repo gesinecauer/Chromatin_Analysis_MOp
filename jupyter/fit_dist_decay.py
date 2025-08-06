@@ -129,14 +129,15 @@ def estimate_exponent_manual(s_by_cell_smooth_agg, x0=None, bounds=(-10, 10), se
     exponent = d['exponent']
     est_alpha = None
     if not as_counts:
+        counts_exp = -0.9
         exponent = exponent / dis_exp
-        est_alpha = -0.8 / exponent
+        est_alpha = counts_exp / exponent
         if verbose:
             if verbose > 1:
                 print(flush=True)
             print(f"v = {exponent:.3g}")
-            print(f"1/v = {1 / exponent:.3g}")
-            print(f"est alpha = B/v = {est_alpha:.3g}")
+            # print(f"1/v = {1 / exponent:.3g}")
+            print(f"est alpha = B/v = {est_alpha:.3g} (assuming counts exponent = {counts_exp:.3g})")
 
     if plot:
         plt.style.use('seaborn-v0_8-poster')

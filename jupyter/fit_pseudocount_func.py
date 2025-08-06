@@ -539,6 +539,14 @@ def ambiguate_matrix_df_for_inference(matrix_df, extra_grouping_cols=None):
     return matrix_df_ambig, snm3c, dis_idx, genomic_dis
 
 
+# def load_cooler(mcool_file, resolution):
+#     resolution_bp = int(resolution * 1e6)
+#     uri = f'{mcool_file}::/resolutions/{resolution_bp:d}'
+#     clr = cooler.Cooler(uri)
+#     return clr
+#     # clr = load_cooler(mcool_file, resolution=resolution)
+
+
 def load_snm3c(mcool_file, resolution=2.5, normalize=True, mask_last_locus_in_chrom=True, verbose=True):
     if isinstance(normalize, str) and normalize.lower() == 'auto':
         normalize = True if 'Raw.' in mcool_file else False
