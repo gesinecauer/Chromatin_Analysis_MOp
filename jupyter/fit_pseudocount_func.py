@@ -24,7 +24,7 @@ with warnings.catch_warnings():
 _setup_jax(traceback=False, debug_nan_inf=False)
 import jax.numpy as jnp
 from jax import grad, jit
-# from jax.nn import relu
+from jax.nn import relu
 from scipy import optimize
 
 
@@ -42,6 +42,7 @@ from jax.nn import relu
 
 def prep_data_for_inference(dir_matrix2d, mcool_file, dis_factor=1,
                             resolution=2.5, normalize_snm3c=True, weights_exponent=None,
+                            agg_genomic_dis_opt=-1, agg_genomic_dis_weight=0,
                             data_outdir=None, name=None, remake_npzfile=False, verbose=True):
     snm3c_type = f"{'raw' if '.raw.' in mcool_file.lower() else 'q'}_snm3c"
     if name is None:
@@ -52,49 +53,54 @@ def prep_data_for_inference(dir_matrix2d, mcool_file, dis_factor=1,
         name = f"{name}_" + ('norm' if normalize_snm3c else 'orig')
     desc = f".{name}.{resolution * 1e3:g}kb"
     
-    npzfile = None
+    npzfile = npz_open = None
+    saved_data_avail = False
     if data_outdir is not None:
         npzfile = os.path.join(data_outdir, f'pseudocounts_infer_logistic.data{desc}.npz')
         if os.path.isfile(npzfile) and not remake_npzfile:
             if verbose:
                 print(f'Loading: {npzfile}', flush=True)
-            npzfile = np.load(npzfile, allow_pickle=True)
-            if set(npzfile.files) == {'snm3c', 'sc_dis_arr', 'genomic_dis', 'nghbr_dis_quantiles'}:
-                data = InferArgs(
-                    snm3c=npzfile['snm3c'], sc_dis_arr=npzfile['sc_dis_arr'],
-                    genomic_dis=npzfile['genomic_dis'],
-                    nghbr_dis_quantiles=npzfile['nghbr_dis_quantiles'],
-                    weights_exponent=weights_exponent, dis_factor=dis_factor)
-                return data
+            npz_open = np.load(npzfile, allow_pickle=True)
+            if set(npz_open.files) == {'snm3c', 'sc_dis_arr', 'genomic_dis', 'nghbr_dis_quantiles', 'chrom'}:
+                saved_data_avail = True
+                snm3c = npz_open['snm3c']
+                sc_dis_arr = npz_open['sc_dis_arr']
+                genomic_dis = npz_open['genomic_dis']
+                chrom = npz_open['chrom']
+                nghbr_dis_quantiles = npz_open['nghbr_dis_quantiles']
 
-    # Load snm3c and single-cell distances
-    matrix_df, sc_dis, lengths_df = load(
-        dir_matrix2d=dir_matrix2d, mcool_file=mcool_file, resolution=resolution,
-        normalize_snm3c=normalize_snm3c, verbose=verbose)
+    if not saved_data_avail:
+        # Load snm3c and single-cell distances
+        matrix_df, sc_dis, lengths_df = load(
+            dir_matrix2d=dir_matrix2d, mcool_file=mcool_file, resolution=resolution,
+            normalize_snm3c=normalize_snm3c, verbose=verbose)
+    
+        # Describe 3D distances between neighboring loci
+        nghbr_dis = sc_dis.loc[(matrix_df['genomic_dis'] == 1) & (
+            ~matrix_df['mask.diffM']) & matrix_df['snm3c'].notnull()].values
+        nghbr_dis_quantiles = {}
+        for q in [0.5, 0.75, 0.9, 0.99, 0.999, 0.9999, 1]:
+            nghbr_dis_quantiles[q] = np.nanquantile(nghbr_dis, q)
+            nghbr_dis_quantiles[round(1 - q, 10)] = np.nanquantile(nghbr_dis, 1 - q)
+        nghbr_dis_quantiles = pd.Series(nghbr_dis_quantiles).sort_values()
+    
+        # Setup data for inference
+        _, snm3c, dis_idx, genomic_dis, chrom = ambiguate_matrix_df_for_inference(matrix_df)
+        sc_dis_arr = sc_dis.loc[dis_idx].values
+        sc_dis_arr[np.isnan(sc_dis_arr)] = 0
+        sc_dis_arr = np.asarray(sc_dis_arr, order='C')
+    
+        if data_outdir is not None:
+            os.makedirs(data_outdir, exist_ok=True)
+            np.savez(npzfile, snm3c=snm3c, sc_dis_arr=sc_dis_arr, genomic_dis=genomic_dis,
+                     chrom=chrom, nghbr_dis_quantiles=np.stack(
+                         [nghbr_dis_quantiles.index.values, nghbr_dis_quantiles.values]))
 
-    # Describe 3D distances between neighboring loci
-    nghbr_dis = sc_dis.loc[(matrix_df['genomic_dis'] == 1) & (
-        ~matrix_df['mask.diffM']) & matrix_df['snm3c'].notnull()].values
-    nghbr_dis_quantiles = {}
-    for q in [0.5, 0.75, 0.9, 0.99, 0.999, 0.9999, 1]:
-        nghbr_dis_quantiles[q] = np.nanquantile(nghbr_dis, q)
-        nghbr_dis_quantiles[round(1 - q, 10)] = np.nanquantile(nghbr_dis, 1 - q)
-    nghbr_dis_quantiles = pd.Series(nghbr_dis_quantiles).sort_values()
-
-    # Setup data for inference
-    _, snm3c, dis_idx, genomic_dis = ambiguate_matrix_df_for_inference(matrix_df)
-    sc_dis_arr = sc_dis.loc[dis_idx].values
-    sc_dis_arr[np.isnan(sc_dis_arr)] = 0
-    sc_dis_arr = np.asarray(sc_dis_arr, order='C')
     data = InferArgs(
-        snm3c=snm3c, sc_dis_arr=sc_dis_arr, genomic_dis=genomic_dis,
-        nghbr_dis_quantiles=nghbr_dis_quantiles, weights_exponent=weights_exponent,
-        dis_factor=dis_factor)
-
-    if data_outdir is not None:
-        os.makedirs(data_outdir, exist_ok=True)
-        np.savez(npzfile, snm3c=snm3c, sc_dis_arr=sc_dis_arr, genomic_dis=genomic_dis,
-                 nghbr_dis_quantiles=np.stack([nghbr_dis_quantiles.index.values, nghbr_dis_quantiles.values]))
+        snm3c=snm3c, sc_dis_arr=sc_dis_arr, genomic_dis=genomic_dis, chrom=chrom,
+        nghbr_dis_quantiles=nghbr_dis_quantiles, normalize_snm3c=normalize_snm3c,
+        agg_genomic_dis_opt=agg_genomic_dis_opt, agg_genomic_dis_weight=agg_genomic_dis_weight,
+        weights_exponent=weights_exponent, dis_factor=dis_factor)
 
     return data
 
@@ -176,14 +182,36 @@ def logistic_jax(d, X, infer_nu=False, infer_q=False, infer_a=False, dis_factor=
     return counts
 
 
-def get_pseudocounts_scaling_factor(pseudocounts, snm3c):
-    # scaling_factor = jnp.sum(pseudocounts * snm3c) / jnp.sum(jnp.square(pseudocounts))
-    # scaling_factor = jnp.where(pseudocounts.sum() == 0, 0, jnp.sum(pseudocounts * snm3c) / jnp.sum(jnp.square(pseudocounts)))
-
+def _get_pseudocounts_scaling_factor(pseudocounts, snm3c):
     scaling_factor = jnp.sum(pseudocounts * snm3c) / jnp.where(
         pseudocounts.sum() == 0, 1, jnp.sum(jnp.square(pseudocounts)))
-    
     return scaling_factor
+
+
+def get_pseudocounts_scaling_factors(pseudocounts, snm3c, chrom):
+    if chrom is None:
+        return float(_get_pseudocounts_scaling_factor(
+            pseudocounts=pseudocounts, snm3c=snm3c)._value)
+    scaling_factors = {}
+    for x in np.unique(chrom):
+        mask = chrom == x
+        scaling_factors[x] = float(_get_pseudocounts_scaling_factor(
+            pseudocounts=pseudocounts[mask], snm3c=snm3c[mask])._value)
+    return pd.Series(scaling_factors)
+
+
+def rescale_pseudocounts(pseudocounts, snm3c, chrom):
+    if chrom is None:
+        scaling_factor = _get_pseudocounts_scaling_factor(
+            pseudocounts=pseudocounts, snm3c=snm3c)
+        return pseudocounts * scaling_factor
+
+    for x in np.unique(chrom):
+        mask = chrom == x
+        scaling_factor = _get_pseudocounts_scaling_factor(
+            pseudocounts=pseudocounts[mask], snm3c=snm3c[mask])
+        pseudocounts = jnp.where(mask, pseudocounts * scaling_factor, pseudocounts)
+    return pseudocounts
 
 
 def get_bulk_pseudocounts(X, data, intramol_only=False, infer_nu=False,
@@ -229,6 +257,31 @@ def weighted_pearsons_corr(x, y, weights=1):
         weighted_cov(x, x, weights) * weighted_cov(y, y, weights)))
 
 
+def _pearson_obj(pseudocounts, snm3c, weights):
+    if weights is None:
+        return jnp.corrcoef(snm3c, pseudocounts)[0, 1]
+    else:
+        return weighted_pearsons_corr(snm3c, pseudocounts, weights=weights)
+
+
+def pearson_obj(pseudocounts, snm3c, weights, chrom):
+    if chrom is None:
+        return _pearson_obj(pseudocounts, snm3c=snm3c, weights=weights)
+
+    unique_chrom = np.unique(chrom)
+    tmp = 0
+    for x in unique_chrom:
+        mask = chrom == x
+        if weights is not None and weights != 1:
+            weights_tmp = weights[mask]
+        else:
+            weights_tmp = None
+        r = _pearson_obj(
+            pseudocounts=pseudocounts[mask], snm3c=snm3c[mask], weights=weights_tmp)
+        tmp = tmp + r * mask.sum()
+    return tmp / snm3c.size
+
+
 def obj_eval_pseudocounts(X, data, intramol_only=False, infer_nu=False,
                           infer_q=False, infer_a=False, obj_type='pearson',
                           verbose=False):
@@ -251,17 +304,17 @@ def obj_eval_pseudocounts(X, data, intramol_only=False, infer_nu=False,
         infer_q=infer_q, infer_a=infer_a)
 
     obj = 0
+    if data.agg_weight:
+        # NOTE: do NOT use rescaled pseudo-counts for this!
+        mse = jnp.mean(jnp.square(counts - data.agg_snm3c))
     if 'pearson' in obj_type:
-        # print(f"counts... {(counts == 0).sum()}/{counts.size}", flush=True); exit(0) # **** XXX TEMP
-        if data.weights is None:
-            pearson_r = jnp.corrcoef(data.snm3c, counts)[0, 1]
-        else:
-            pearson_r = weighted_pearsons_corr(data.snm3c, counts, weights=data.weights)
-        # pearson_r = jnp.where(jnp.isnan(pearson_r), 0, pearson_r)
+        # if data.chrom is not None:
+        #     raise NotImplementedError("Need to optimally rescale pseudo-counts for Pearson obj") # FIXME
+        #     # counts = rescale_pseudocounts(counts, snm3c=data.snm3c, chrom=data.chrom)
+        pearson_r = pearson_obj(counts, snm3c=data.snm3c, weights=data.weights, chrom=data.chrom)
         obj += -pearson_r
     if ('rmse' in obj_type) or ('mse' in obj_type):
-        scaling_factor = get_pseudocounts_scaling_factor(counts, snm3c=data.snm3c)
-        counts = counts * scaling_factor
+        counts = rescale_pseudocounts(counts, snm3c=data.snm3c, chrom=data.chrom)
         if data.weights is None:
             mse = jnp.mean(jnp.square(counts - data.snm3c))
         else:
@@ -270,6 +323,7 @@ def obj_eval_pseudocounts(X, data, intramol_only=False, infer_nu=False,
             obj += mse
         elif 'rmse' in obj_type:
             obj += jnp.sqrt(mse)
+    
 
     return obj
 
@@ -335,11 +389,16 @@ def estimate_logistic_param(data, intramol_only=False, infer_nu=False, infer_q=F
             bound_nu = [0 + buffer, 1]  # 0 < nu <= 1  # XXX ************************
             # bound_nu = [0 + buffer, np.inf]  # nu > 0  # XXX ************************
 
-        if True:  # note='buffer8';
-            buffer=1e-8
+        if True:  # note='buffer10';
+            buffer=1e-10
             bound_k = [-np.inf, 0 - buffer]  # k < 0
-            bound_d0 = [0, data.nghbr_dis_quantiles[0.9999]]
+            bound_d0 = [0, data.nghbr_dis_quantiles[1]]
             bound_nu = [0 + buffer, 2]
+        # if True:  # note='buffer8';
+        #     buffer=1e-8
+        #     bound_k = [-np.inf, 0 - buffer]  # k < 0
+        #     bound_d0 = [0, data.nghbr_dis_quantiles[0.9999]]
+        #     bound_nu = [0 + buffer, 2]
         # if True:  # note='buffer4_k-lt0_d0-gte0-lte9999p_nu-lte2';
         #     buffer=1e-4
         #     bound_k = [-np.inf, 0 - buffer]  # k < 0
@@ -404,7 +463,9 @@ def estimate_logistic_param(data, intramol_only=False, infer_nu=False, infer_q=F
     counts = get_bulk_pseudocounts(
         X, data=data, intramol_only=intramol_only, infer_nu=infer_nu,
         infer_q=infer_q, infer_a=infer_a)
-    d['scaling_factor'] = float(get_pseudocounts_scaling_factor(counts, snm3c=data.snm3c)._value) / data.dis_factor
+    scaling_factors = get_pseudocounts_scaling_factors(
+        counts, snm3c=data.snm3c, chrom=data.chrom) / data.dis_factor
+    d['scaling_factor'] = scaling_factors.values
 
     if verbose > 1:
         print("\nRESULTS:", flush=True)
@@ -452,15 +513,41 @@ def print_infer_results_pseudocounts(d, infer_nu=False, infer_q=False, infer_a=F
 # ===================================================================================================================
 
 class InferArgs(object):
-    def __init__(self, snm3c, sc_dis_arr, genomic_dis, nghbr_dis_quantiles, weights_exponent=None, dis_factor=1):
+    def __init__(self, snm3c, sc_dis_arr, genomic_dis, chrom, nghbr_dis_quantiles,
+                 normalize_snm3c=True, agg_genomic_dis_opt=-1, agg_genomic_dis_weight=0,
+                 weights_exponent=None, dis_factor=1):
         if dis_factor is None:
             dis_factor = 1.
         self.snm3c = snm3c
+        if normalize_snm3c:
+            self.chrom = chrom
+        else:
+            self.chrom = None
         self.dis = sc_dis_arr
         if dis_factor != 1:
             self.dis *= dis_factor
             print(f'\tDIS_FACTOR ~~~~~~~~~~~~~~~~~~~~~~~~~~{dis_factor=}\n', flush=True)
         self.dis_factor = float(dis_factor)
+
+        if agg_genomic_dis_weight is None or agg_genomic_dis_weight == 0:
+            self.agg_snm3c = None
+            self.agg_weight = 0
+        else:
+            self.agg_weight = agg_genomic_dis_weight
+            tmp = pd.DataFrame()
+            tmp['genomic_dis'] = genomic_dis
+            tmp['chrom'] = chrom
+            tmp['snm3c'] = snm3c
+
+
+            
+            cutoff = tmp.groupby('chrom').genomic_dis.max().min() * agg_genomic_dis_opt
+            tmp = tmp.reset_index().rename({'index': 'sort_order'}, axis=1).set_index(['chrom', 'genomic_dis'])
+            mask = tmp.index.get_level_values(1) <= cutoff
+            tmp['snm3c_mean'] = -1.
+            tmp.loc[mask, 'snm3c_mean'] = tmp[mask].groupby(level=[0, 1]).snm3c.mean()
+            tmp.sort_values('sort_order', inplace=True)
+            self.agg_snm3c = np.asarray(tmp.snm3c_mean.values, order='C')
 
         if isinstance(nghbr_dis_quantiles, (np.ndarray, tuple, list)):
             if isinstance(nghbr_dis_quantiles, np.ndarray) and nghbr_dis_quantiles.shape[1] == 2:
@@ -472,13 +559,11 @@ class InferArgs(object):
             nghbr_dis_quantiles = nghbr_dis_quantiles.to_dict()
         elif not isinstance(nghbr_dis_quantiles, dict):
             raise ValueError(f"Input not understood for nghbr_dis_quantiles:\n{nghbr_dis_quantiles}")
-        # if dis_factor != 1: # DON'T do this actually, d0 is adjusted at each iter in logistic_jax func
-        #     nghbr_dis_quantiles = {k: (v * dis_factor) for k, v in nghbr_dis_quantiles.items()}
         self.nghbr_dis_quantiles = nghbr_dis_quantiles
-        print('3D distance between neighboring loci, quantiles:\n\t' + pd.Series(
-            nghbr_dis_quantiles).sort_values().to_frame().reset_index().to_string(
-            header=False, index=False, float_format=lambda x: f"{x:.4g}").replace('\n', '\n\t'), flush=True)
-        print(nghbr_dis_quantiles)
+        # print('3D distance between neighboring loci, quantiles:\n\t' + pd.Series(
+        #     nghbr_dis_quantiles).sort_values().to_frame().reset_index().to_string(
+        #     header=False, index=False, float_format=lambda x: f"{x:.4g}").replace('\n', '\n\t'), flush=True)
+        # print(nghbr_dis_quantiles)
         
         if weights_exponent is None or not weights_exponent:
             self.weights = None
@@ -528,15 +613,21 @@ def ambiguate_matrix_df_for_inference(matrix_df, extra_grouping_cols=None):
         level=np.arange(len(grp_cols)).tolist())
 
     matrix_df_ambig = matrix_df_ambig[matrix_df_ambig.snm3c.notnull()]
+    matrix_df_ambig['chromnum'] = matrix_df_ambig.chrom.str.replace('chr', '', regex=False).astype(int)
+    # matrix_df_ambig.sort_values(['chromnum', 'i.idx_chrom', 'j.idx_chrom'], inplace=True)
+    # matrix_df_ambig.sort_values(['genomic_dis_ambig', 'chromnum'], inplace=True)
+    matrix_df_ambig.sort_values(
+        ['chromnum', 'genomic_dis_ambig', 'i.idx_chrom', 'j.idx_chrom'], inplace=True)
 
     snm3c = np.asarray(matrix_df_ambig.snm3c.values, order='C')
     genomic_dis = np.asarray(matrix_df_ambig.genomic_dis_ambig.values, order='C')
+    chrom = np.asarray(matrix_df_ambig.chromnum.values, order='C')
 
     quadrants = ['h1_h1', 'h2_h2', 'h1_h2', 'h2_h1']
     dis_idx = np.concatenate([matrix_df_ambig[q].values for q in quadrants]) # HERE
     dis_idx = np.asarray(dis_idx, order='C')
 
-    return matrix_df_ambig, snm3c, dis_idx, genomic_dis
+    return matrix_df_ambig, snm3c, dis_idx, genomic_dis, chrom
 
 
 # def load_cooler(mcool_file, resolution):
@@ -694,7 +785,8 @@ def load(dir_matrix2d, mcool_file, lengths_file=None, resolution=2.5, normalize_
 
 def load_and_infer(dir_matrix2d, mcool_file, resolution, normalize_snm3c=True, outdir=None, name=None,
                    intramol_only=False, dis_factor=1, infer_nu=False, infer_q=False, infer_a=False,
-                   obj_type='pearson', weights_exponent=None, init=None, bounds=None, seed=0,
+                   obj_type='pearson', agg_genomic_dis_opt=-1, agg_genomic_dis_weight=0,
+                   weights_exponent=None, init=None, bounds=None, seed=0,
                    max_iter=1e20, factr=1e7, maxls=20, pgtol=1e-05, jitted=True):
 
     data_outdir = outdir
@@ -710,6 +802,7 @@ def load_and_infer(dir_matrix2d, mcool_file, resolution, normalize_snm3c=True, o
     data = prep_data_for_inference(
         dir_matrix2d, mcool_file=mcool_file, resolution=resolution,
         normalize_snm3c=normalize_snm3c, dis_factor=dis_factor,
+        agg_genomic_dis_opt=agg_genomic_dis_opt, agg_genomic_dis_weight=agg_genomic_dis_weight,
         weights_exponent=weights_exponent, data_outdir=data_outdir, name=name, verbose=True)
     assert isinstance(data.snm3c, np.ndarray) and data.snm3c.size
     assert isinstance(data.dis, np.ndarray) and data.dis.size
@@ -771,6 +864,8 @@ def main():
     parser.add_argument('--infer_a', default=False, action='store_true')
     parser.add_argument("--obj_type", type=str, default='rmse')
     parser.add_argument("--weights_exponent", default=None, type=int)
+    parser.add_argument("--agg_genomic_dis_opt", default=-1, type=float)
+    parser.add_argument("--agg_genomic_dis_weight", default=0, type=float)
     parser.add_argument("--dis_factor", default=1, type=float)
     
 
@@ -800,7 +895,9 @@ def main():
         args.dir_matrix2d, mcool_file=args.mcool_file, resolution=args.resolution,
         normalize_snm3c=args.normalize, outdir=args.outdir, name=args.name, intramol_only=args.intramol_only,
         infer_nu=args.infer_nu, infer_q=args.infer_q, infer_a=args.infer_a,
-        obj_type=args.obj_type, weights_exponent=args.weights_exponent, dis_factor=args.dis_factor, init=init,
+        obj_type=args.obj_type, weights_exponent=args.weights_exponent,
+        agg_genomic_dis_opt=args.agg_genomic_dis_opt, agg_genomic_dis_weight=args.agg_genomic_dis_weight,
+        dis_factor=args.dis_factor, init=init,
         seed=args.seed, max_iter=args.max_iter, factr=args.factr, maxls=args.maxls,
         pgtol=args.pgtol, jitted=args.jitted)
 

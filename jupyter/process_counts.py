@@ -254,7 +254,7 @@ def save_matrices(lengths_df, matrix_df, ambiguity='ua', alpha=None, beta=None,
             if isinstance(alpha, dict):
                 alpha = pd.Series(alpha)
             dataset_info = pd.concat([dataset_info, alpha])
-        else:
+        elif alpha is not None:
             raise ValueError(f"Alpha not understood: {alpha}")
         dataset_info.to_csv(os.path.join(outdir_counts, "dataset_info.txt"), sep="\t", header=False)
 
@@ -425,7 +425,6 @@ def save_dataset(input_file, outdir, min_percentile_loci_cov=0.10, nreads=None, 
         outdirs = {'ua': None, 'ambig': None, 'pa': None, 'dist': None}
         infer_alpha_outdir = None
     else:
-        
         outdirs = {
             'ua': os.path.join(outdir, "unambig", f"{name}.{desc}"),
             'ambig': os.path.join(outdir, "ambig", f"{name}.{desc}"),

@@ -14,6 +14,33 @@ import seaborn as sns
 sns.set_theme('paper', style='white')
 
 
+def _get_pseudocounts_scaling_factor(pseudocounts, snm3c):
+    scaling_factor = np.sum(pseudocounts * snm3c) / np.where(
+        pseudocounts.sum() == 0, 1, np.sum(np.square(pseudocounts)))
+    return scaling_factor
+
+
+def rescale_snm3c(pseudocounts, snm3c, chrom, copy=True, verbose=False):
+    if chrom is None:
+        scaling_factor = _get_pseudocounts_scaling_factor(
+            pseudocounts=pseudocounts, snm3c=snm3c)
+        return snm3c / scaling_factor
+
+    scaling_factors = pd.Series(index=[f"chr{x}" for x in np.unique(chrom)])
+    if copy:
+        snm3c = snm3c.copy()
+    for x in np.unique(chrom):
+        mask = chrom == x
+        scaling_factor = _get_pseudocounts_scaling_factor(
+            pseudocounts=pseudocounts[mask], snm3c=snm3c[mask])
+        scaling_factors[f"chr{x}"] = scaling_factor
+        snm3c[mask] /= scaling_factor
+    if verbose:
+        print(f"Scaling factors: (mean={scaling_factors.mean():.3g}, var={scaling_factors.var():.3g})", flush=True)
+        print(scaling_factors.to_string(float_format=lambda x: f"{x:.3g}"), flush=True)
+    return snm3c
+
+
 def logistic(d, k, d0=0, nu=1, q=1, L=1, a=0):
     assert k < 0
     tmp = -k * (d - d0)
@@ -42,14 +69,21 @@ def thresholded(x, cutoff):
 
 # ===================================================================================================================
 
-def assess_pseudocounts(matrix_df, sc_dis, transfer_func, transfer_func_kwargs=None, plot=False,
-                        perc_cutoff=0.95, agg_func='mean', plot_hue=None, remove_null_snm3c=True, verbose=False):
+
+def get_pseudocounts(matrix_df, sc_dis, transfer_func, transfer_func_kwargs=None, snm3c_are_normalized=True,
+                     agg_func='mean', remove_null_snm3c=True, verbose=False):
+    pc_col = f"pc_{agg_func}"
     if transfer_func_kwargs is None:
         transfer_func_kwargs = {}
+
     counts_sc = transfer_func(sc_dis, **transfer_func_kwargs)
-    counts = pd.concat([
-        counts_sc.mean(axis=1).to_frame().rename({0: 'pc_mean'}, axis=1),
-        counts_sc.median(axis=1).to_frame().rename({0: 'pc_med'}, axis=1)], axis=1)
+    if agg_func.lower() == 'mean':
+        counts = counts_sc.mean(axis=1).to_frame().rename({0: 'pc_mean'}, axis=1)
+    else:
+        counts = counts_sc.median(axis=1).to_frame().rename({0: 'pc_med'}, axis=1)
+    # counts = pd.concat([
+    #     counts_sc.mean(axis=1).to_frame().rename({0: 'pc_mean'}, axis=1),
+    #     counts_sc.median(axis=1).to_frame().rename({0: 'pc_med'}, axis=1)], axis=1)
     matrix_df = matrix_df.join(counts, how='inner')
     if remove_null_snm3c:
         matrix_df = matrix_df[matrix_df.snm3c.notnull()]
@@ -71,6 +105,23 @@ def assess_pseudocounts(matrix_df, sc_dis, transfer_func, transfer_func_kwargs=N
     matrix_df_ambig = matrix_df_ambig.groupby(grp_cols, dropna=False).mean()
     matrix_df_ambig.reset_index(level=np.arange(len(grp_cols)).tolist(), inplace=True)
 
+    # Optimally rescale pseudocounts (MLE of MSE)
+    matrix_df_ambig['chromnum'] = matrix_df_ambig.chrom.str.replace('chr', '', regex=False).astype(int)
+    if snm3c_are_normalized:
+        # for col in ('pc_mean', 'pc_med'):  # FIXME select mean/median as arg when running the func...
+        matrix_df_ambig['snm3c'] = rescale_snm3c(
+            pseudocounts=matrix_df_ambig[pc_col].values,
+            snm3c=matrix_df_ambig.snm3c.values, chrom=matrix_df_ambig.chromnum.values, copy=False)
+
+    return matrix_df_ambig, matrix_df
+
+
+def pearson_corr_pseudocounts(matrix_df_ambig, transfer_func, transfer_func_kwargs=None,
+                              agg_func='mean', verbose=False):
+    pc_col = f"pc_{agg_func}"
+    if transfer_func_kwargs is None:
+        transfer_func_kwargs = {}
+
     if transfer_func.__name__ == 'sum_logistic':
         func_kwargs_str = 'sum'
     else:
@@ -78,11 +129,28 @@ def assess_pseudocounts(matrix_df, sc_dis, transfer_func, transfer_func_kwargs=N
     pearson_r = {
         'func': transfer_func.__name__,
         'func_kwargs': func_kwargs_str,
-        'mean': float(matrix_df_ambig[["snm3c", "pc_mean"]].corr(method='pearson').values[0, 1]),
-        'med': float(matrix_df_ambig[["snm3c", "pc_med"]].corr(method='pearson').values[0, 1])}
+        agg_func: float(matrix_df_ambig[["snm3c", pc_col]].corr(method='pearson').values[0, 1])}
     if verbose:
-        print(f"Pearson R:  mean={pearson_r['mean']:.3g}\n             "
-              f"med={pearson_r['med']:.3g}", flush=True)
+        print(f"Pearson R:  {agg_func}={pearson_r[agg_func]:.3g}", flush=True)
+        # print(f"Pearson R:  mean={pearson_r['mean']:.3g}\n             "
+        #       f"med={pearson_r['med']:.3g}", flush=True)
+    return pearson_r
+
+
+def assess_pseudocounts(matrix_df, sc_dis, transfer_func, transfer_func_kwargs=None, plot=False, snm3c_are_normalized=True,
+                        perc_cutoff=0.95, agg_func='mean', plot_hue=None, remove_null_snm3c=True, verbose=False):
+    pc_col = f"pc_{agg_func}"
+    if transfer_func_kwargs is None:
+        transfer_func_kwargs = {}
+
+    matrix_df_ambig, _ = get_pseudocounts(
+        matrix_df, sc_dis=sc_dis, transfer_func=transfer_func, transfer_func_kwargs=transfer_func_kwargs,
+        snm3c_are_normalized=snm3c_are_normalized, agg_func=agg_func, remove_null_snm3c=remove_null_snm3c,
+        verbose=verbose)
+
+    pearson_r = pearson_corr_pseudocounts(
+        matrix_df_ambig, transfer_func=transfer_func, transfer_func_kwargs=transfer_func_kwargs,
+        agg_func=agg_func, verbose=verbose)
 
     if plot:
         plot_counts_corr(
@@ -90,6 +158,74 @@ def assess_pseudocounts(matrix_df, sc_dis, transfer_func, transfer_func_kwargs=N
             hue=plot_hue)
 
     return pearson_r, (matrix_df, matrix_df_ambig)
+
+
+def assess_via_genomic_dis(matrix_df, sc_dis, transfer_func, transfer_func_kwargs=None, genomic_dis_list=None,
+                           snm3c_are_normalized=True, plot=False, perc_cutoff=0.95, agg_func='mean', plot_hue=None,
+                           remove_null_snm3c=True, results_file=None, verbose=True):
+    pc_col = f"pc_{agg_func}"
+    if transfer_func_kwargs is None:
+        transfer_func_kwargs = {}
+    if genomic_dis_list is None:
+        genomic_dis_list = [(0, np.inf)]
+
+    results_df = pd.DataFrame()
+    results = []
+    if results_file is not None and os.path.exists(results_file):
+        # print(results_file, flush=True)
+        results_df = pd.read_csv(results_file, sep='\t')
+        results = results_df.to_dict(orient='records')
+    # print(f"{len(results_df)} entries:")
+    # display(results_df.head())
+
+    matrix_df_ambig, _ = get_pseudocounts(
+        matrix_df, sc_dis=sc_dis, transfer_func=transfer_func, transfer_func_kwargs=transfer_func_kwargs,
+        snm3c_are_normalized=snm3c_are_normalized, agg_func=agg_func, remove_null_snm3c=remove_null_snm3c,
+        verbose=verbose)
+
+    for genomic_dis in genomic_dis_list:
+        if isinstance(genomic_dis, (int, float)):
+            genomic_dis_min = genomic_dis_max = genomic_dis
+            desc=f's={genomic_dis}'.ljust(10)
+        else:
+            genomic_dis_min, genomic_dis_max = genomic_dis
+            desc=f'{genomic_dis_min}≤s≤{genomic_dis_max}'.ljust(10)
+
+        mask = (matrix_df_ambig.genomic_dis_ambig >= genomic_dis_min) & (
+            matrix_df_ambig.genomic_dis_ambig <= genomic_dis_max)
+        res = pearson_corr_pseudocounts(
+            matrix_df_ambig.loc[mask], transfer_func=transfer_func,
+            transfer_func_kwargs=transfer_func_kwargs, agg_func=agg_func, verbose=verbose)
+        res['genomic_dis_min'] = genomic_dis_min
+        res['genomic_dis_max'] = genomic_dis_max
+        if verbose:
+            print(f"GENOMIC DIS: {desc}  R={res['mean']:.3g}", flush=True)
+
+        if plot:
+            plot_counts_corr(
+                matrix_df_ambig.loc[mask], pearson_r=res, perc_cutoff=perc_cutoff,
+                agg_func=agg_func, hue=plot_hue)
+
+        results.append(res)
+        results_df = pd.DataFrame(results).drop_duplicates().sort_values(
+            'mean', ascending=False).reset_index(drop=True)
+        if results_file is not None:
+            results_df.to_csv(results_file, sep='\t', index=False)
+
+    if verbose:
+        print(flush=True)
+        results_df_func_single = results_df[(results_df.func == res['func']) & (
+            results_df.func_kwargs == res['func_kwargs']) & (
+            results_df.genomic_dis_min == results_df.genomic_dis_max)]
+        results_df_func_range = results_df[(results_df.func == res['func']) & (
+            results_df.func_kwargs == res['func_kwargs']) & (
+            results_df.genomic_dis_min != results_df.genomic_dis_max)]
+        if len(results_df_func_single):
+            display(results_df_func_single.head())
+        if len(results_df_func_range):
+            display(results_df_func_range.head())
+
+    return results_df
 
 
 def plot_counts_corr(matrix_df_ambig, perc_cutoff=0.95, agg_func='mean', pearson_r=None, title=None,
