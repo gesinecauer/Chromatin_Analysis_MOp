@@ -42,7 +42,7 @@ from jax.nn import relu
 
 def prep_data_for_inference(dir_matrix2d, mcool_file, dis_factor=1,
                             resolution=2.5, normalize_snm3c=True, weights_exponent=None,
-                            agg_genomic_dis_opt=-1, agg_genomic_dis_weight=0,
+                            constraint_opt=-1, constraint_penalty=0,
                             data_outdir=None, name=None, remake_npzfile=False, verbose=True):
     snm3c_type = f"{'raw' if '.raw.' in mcool_file.lower() else 'q'}_snm3c"
     if name is None:
@@ -85,7 +85,8 @@ def prep_data_for_inference(dir_matrix2d, mcool_file, dis_factor=1,
         nghbr_dis_quantiles = pd.Series(nghbr_dis_quantiles).sort_values()
     
         # Setup data for inference
-        _, snm3c, dis_idx, genomic_dis, chrom = ambiguate_matrix_df_for_inference(matrix_df)
+        _, snm3c, dis_idx, genomic_dis, chrom = ambiguate_matrix_df_for_inference(
+            matrix_df, snm3c_are_normed=normalize_snm3c)
         sc_dis_arr = sc_dis.loc[dis_idx].values
         sc_dis_arr[np.isnan(sc_dis_arr)] = 0
         sc_dis_arr = np.asarray(sc_dis_arr, order='C')
@@ -98,8 +99,8 @@ def prep_data_for_inference(dir_matrix2d, mcool_file, dis_factor=1,
 
     data = InferArgs(
         snm3c=snm3c, sc_dis_arr=sc_dis_arr, genomic_dis=genomic_dis, chrom=chrom,
-        nghbr_dis_quantiles=nghbr_dis_quantiles, normalize_snm3c=normalize_snm3c,
-        agg_genomic_dis_opt=agg_genomic_dis_opt, agg_genomic_dis_weight=agg_genomic_dis_weight,
+        nghbr_dis_quantiles=nghbr_dis_quantiles, snm3c_are_normed=normalize_snm3c,
+        constraint_opt=constraint_opt, constraint_penalty=constraint_penalty,
         weights_exponent=weights_exponent, dis_factor=dis_factor)
 
     return data
@@ -200,8 +201,8 @@ def get_pseudocounts_scaling_factors(pseudocounts, snm3c, chrom):
     return pd.Series(scaling_factors)
 
 
-def rescale_pseudocounts(pseudocounts, snm3c, chrom):
-    if chrom is None:
+def rescale_pseudocounts(pseudocounts, snm3c, chrom, snm3c_are_normed):
+    if not snm3c_are_normed:
         scaling_factor = _get_pseudocounts_scaling_factor(
             pseudocounts=pseudocounts, snm3c=snm3c)
         return pseudocounts * scaling_factor
@@ -264,8 +265,8 @@ def _pearson_obj(pseudocounts, snm3c, weights):
         return weighted_pearsons_corr(snm3c, pseudocounts, weights=weights)
 
 
-def pearson_obj(pseudocounts, snm3c, weights, chrom):
-    if chrom is None:
+def pearson_obj(pseudocounts, snm3c, weights, chrom, snm3c_are_normed):
+    if not snm3c_are_normed:
         return _pearson_obj(pseudocounts, snm3c=snm3c, weights=weights)
 
     unique_chrom = np.unique(chrom)
@@ -304,25 +305,37 @@ def obj_eval_pseudocounts(X, data, intramol_only=False, infer_nu=False,
         infer_q=infer_q, infer_a=infer_a)
 
     obj = 0
-    if data.agg_weight:
-        # NOTE: do NOT use rescaled pseudo-counts for this!
-        mse = jnp.mean(jnp.square(counts - data.agg_snm3c))
+    counts_are_rescaled = False
     if 'pearson' in obj_type:
-        # if data.chrom is not None:
-        #     raise NotImplementedError("Need to optimally rescale pseudo-counts for Pearson obj") # FIXME
-        #     # counts = rescale_pseudocounts(counts, snm3c=data.snm3c, chrom=data.chrom)
-        pearson_r = pearson_obj(counts, snm3c=data.snm3c, weights=data.weights, chrom=data.chrom)
-        obj += -pearson_r
+        pearson_r = pearson_obj(
+            counts, snm3c=data.snm3c, weights=data.weights, chrom=data.chrom,
+            snm3c_are_normed=data.snm3c_are_normed)
+        obj = obj - pearson_r
     if ('rmse' in obj_type) or ('mse' in obj_type):
-        counts = rescale_pseudocounts(counts, snm3c=data.snm3c, chrom=data.chrom)
+        counts = rescale_pseudocounts(
+            counts, snm3c=data.snm3c, chrom=data.chrom, snm3c_are_normed=data.snm3c_are_normed)
+        counts_are_rescaled = True
         if data.weights is None:
             mse = jnp.mean(jnp.square(counts - data.snm3c))
         else:
             mse = jnp.average(jnp.square(counts - data.snm3c), weights=data.weights)
         if 'mse' in obj_type:
-            obj += mse
+            obj = obj + mse
         elif 'rmse' in obj_type:
-            obj += jnp.sqrt(mse)
+            obj = obj + jnp.sqrt(mse)
+
+    if data.agg_penalty:  # Apply constraint (based on mean counts per genomic distance bin)
+        if not counts_are_rescaled:
+            counts = rescale_pseudocounts(
+                counts, snm3c=data.snm3c, chrom=data.chrom, snm3c_are_normed=data.snm3c_are_normed)
+        agg_counts = jnp.histogram(
+            data.agg_category, weights=counts[data.agg_mask], bins=data.agg_n.size,
+            density=False)[0] / data.agg_n
+        if data.agg_weight is None:
+            agg_mse = jnp.mean(jnp.square(agg_counts - data.agg_snm3c))
+        else:
+            agg_mse = jnp.average(jnp.square(agg_counts - data.agg_snm3c), weights=data.agg_weight)
+        obj = obj + data.agg_penalty * agg_mse
     
 
     return obj
@@ -512,13 +525,51 @@ def print_infer_results_pseudocounts(d, infer_nu=False, infer_q=False, infer_a=F
 # ===================================================================================================================
 # ===================================================================================================================
 
+def setup_dist_decay_obj(genomic_dis, chrom, snm3c, constraint_opt):
+    tmp = pd.DataFrame.from_dict(
+        dict(genomic_dis=genomic_dis, chrom=chrom, snm3c=snm3c))
+    cutoff = tmp.groupby('chrom').genomic_dis.max().min()
+
+    tmp['weight'] = 1
+    if constraint_opt == 0:
+        cutoff = 1
+    elif constraint_opt > 0:
+        cutoff = cutoff * constraint_opt
+    else:
+        tmp['weight'] = tmp.genomic_dis.pow(float(constraint_opt))
+    tmp['mask'] = tmp.genomic_dis <= cutoff
+    tmp['n'] = 1
+    tmp['sort_order'] = np.arange(len(tmp), dtype=int)
+    tmp.set_index(['chrom', 'genomic_dis'], inplace=True)
+
+    agg = tmp.groupby(level=[0, 1]).agg({
+        'snm3c': 'mean', 'n': 'sum', 'sort_order': 'min', 'mask': lambda x: x.iloc[0],
+        'weight': lambda x: x.iloc[0]}).sort_values('sort_order').drop('sort_order', axis=1)
+    agg['category'] = -1
+    agg.loc[agg['mask'], 'category'] = np.arange(agg['mask'].sum(), dtype=int)
+
+    df = tmp[['sort_order']].join(agg).sort_values('sort_order')
+    
+    agg_snm3c = np.asarray(agg.loc[agg['mask'], 'snm3c'].values, order='C')
+    agg_n = np.asarray(agg.loc[agg['mask'], 'n'].values, order='C')
+    if constraint_opt < 0:
+        agg_weight = np.asarray(agg.loc[agg['mask'], 'weight'].values, order='C')
+    else:
+        agg_weight = None
+    agg_category = np.asarray(df.loc[df['mask'], 'category'].values, order='C')
+    agg_mask = np.asarray(df['mask'].values, order='C')
+
+    return agg_snm3c, agg_n, agg_weight, agg_category, agg_mask
+
+
 class InferArgs(object):
     def __init__(self, snm3c, sc_dis_arr, genomic_dis, chrom, nghbr_dis_quantiles,
-                 normalize_snm3c=True, agg_genomic_dis_opt=-1, agg_genomic_dis_weight=0,
+                 snm3c_are_normed=True, constraint_opt=-1, constraint_penalty=0,
                  weights_exponent=None, dis_factor=1):
         if dis_factor is None:
             dis_factor = 1.
         self.snm3c = snm3c
+        self.snm3c_are_normed = snm3c_are_normed
         if normalize_snm3c:
             self.chrom = chrom
         else:
@@ -526,28 +577,19 @@ class InferArgs(object):
         self.dis = sc_dis_arr
         if dis_factor != 1:
             self.dis *= dis_factor
-            print(f'\tDIS_FACTOR ~~~~~~~~~~~~~~~~~~~~~~~~~~{dis_factor=}\n', flush=True)
+            print(f'\tDIS_FACTOR ~~~~~~~~~~~~~~~~~~~~~~~~~~ {dis_factor=}\n', flush=True)
         self.dis_factor = float(dis_factor)
 
-        if agg_genomic_dis_weight is None or agg_genomic_dis_weight == 0:
+        if constraint_penalty is None or constraint_penalty == 0:
             self.agg_snm3c = None
-            self.agg_weight = 0
+            self.agg_penalty = 0
         else:
-            self.agg_weight = agg_genomic_dis_weight
-            tmp = pd.DataFrame()
-            tmp['genomic_dis'] = genomic_dis
-            tmp['chrom'] = chrom
-            tmp['snm3c'] = snm3c
-
-
-            
-            cutoff = tmp.groupby('chrom').genomic_dis.max().min() * agg_genomic_dis_opt
-            tmp = tmp.reset_index().rename({'index': 'sort_order'}, axis=1).set_index(['chrom', 'genomic_dis'])
-            mask = tmp.index.get_level_values(1) <= cutoff
-            tmp['snm3c_mean'] = -1.
-            tmp.loc[mask, 'snm3c_mean'] = tmp[mask].groupby(level=[0, 1]).snm3c.mean()
-            tmp.sort_values('sort_order', inplace=True)
-            self.agg_snm3c = np.asarray(tmp.snm3c_mean.values, order='C')
+            print(f'\tDIST DECAY CONSTRAINT ~~~~~~~~~~~~~~~~~~~~~~~~~~ penalty={constraint_penalty:g}, opt={constraint_opt:g}\n', flush=True)
+            self.agg_penalty = constraint_penalty
+            tmp = setup_dist_decay_obj(
+                genomic_dis=genomic_dis, chrom=chrom, snm3c=snm3c,
+                constraint_opt=constraint_opt)
+            self.agg_snm3c, self.agg_n, self.agg_weight, self.agg_category, self.agg_mask = tmp
 
         if isinstance(nghbr_dis_quantiles, (np.ndarray, tuple, list)):
             if isinstance(nghbr_dis_quantiles, np.ndarray) and nghbr_dis_quantiles.shape[1] == 2:
@@ -593,7 +635,7 @@ def get_unambig_idx_per_ambig(df):
     return s
 
 
-def ambiguate_matrix_df_for_inference(matrix_df, extra_grouping_cols=None):
+def ambiguate_matrix_df_for_inference(matrix_df, snm3c_are_normed, extra_grouping_cols=None):
     grp_cols = ['i.idx_ambig', 'j.idx_ambig', 'chrom', 'i.idx_chrom', 'j.idx_chrom',
                 'i.idx_clr', 'j.idx_clr', 'genomic_dis_ambig', 'snm3c']
     if extra_grouping_cols is not None:
@@ -612,7 +654,16 @@ def ambiguate_matrix_df_for_inference(matrix_df, extra_grouping_cols=None):
         grp_cols).apply(get_unambig_idx_per_ambig, include_groups=False).reset_index(
         level=np.arange(len(grp_cols)).tolist())
 
+    # Rescale snm3c so that mean of bins between neighboring loci is 1
+    if snm3c_are_normed:
+        snm3c_s1_mean = matrix_df_ambig[matrix_df_ambig.genomic_dis_ambig == 1].groupby(
+            'chrom').snm3c.mean()[matrix_df_ambig.chrom].values
+    else:
+        snm3c_s1_mean = matrix_df_ambig[matrix_df_ambig.genomic_dis_ambig == 1, 'snm3c'].mean()
+    matrix_df_ambig['snm3c'] /= snm3c_s1_mean
+
     matrix_df_ambig = matrix_df_ambig[matrix_df_ambig.snm3c.notnull()]
+    # matrix_df_ambig.groupby('chrom').snm3c.mean().reset_index()  # FIXME
     matrix_df_ambig['chromnum'] = matrix_df_ambig.chrom.str.replace('chr', '', regex=False).astype(int)
     # matrix_df_ambig.sort_values(['chromnum', 'i.idx_chrom', 'j.idx_chrom'], inplace=True)
     # matrix_df_ambig.sort_values(['genomic_dis_ambig', 'chromnum'], inplace=True)
@@ -785,7 +836,7 @@ def load(dir_matrix2d, mcool_file, lengths_file=None, resolution=2.5, normalize_
 
 def load_and_infer(dir_matrix2d, mcool_file, resolution, normalize_snm3c=True, outdir=None, name=None,
                    intramol_only=False, dis_factor=1, infer_nu=False, infer_q=False, infer_a=False,
-                   obj_type='pearson', agg_genomic_dis_opt=-1, agg_genomic_dis_weight=0,
+                   obj_type='pearson', constraint_opt=-1, constraint_penalty=0,
                    weights_exponent=None, init=None, bounds=None, seed=0,
                    max_iter=1e20, factr=1e7, maxls=20, pgtol=1e-05, jitted=True):
 
@@ -802,7 +853,7 @@ def load_and_infer(dir_matrix2d, mcool_file, resolution, normalize_snm3c=True, o
     data = prep_data_for_inference(
         dir_matrix2d, mcool_file=mcool_file, resolution=resolution,
         normalize_snm3c=normalize_snm3c, dis_factor=dis_factor,
-        agg_genomic_dis_opt=agg_genomic_dis_opt, agg_genomic_dis_weight=agg_genomic_dis_weight,
+        constraint_opt=constraint_opt, constraint_penalty=constraint_penalty,
         weights_exponent=weights_exponent, data_outdir=data_outdir, name=name, verbose=True)
     assert isinstance(data.snm3c, np.ndarray) and data.snm3c.size
     assert isinstance(data.dis, np.ndarray) and data.dis.size
@@ -864,8 +915,8 @@ def main():
     parser.add_argument('--infer_a', default=False, action='store_true')
     parser.add_argument("--obj_type", type=str, default='rmse')
     parser.add_argument("--weights_exponent", default=None, type=int)
-    parser.add_argument("--agg_genomic_dis_opt", default=-1, type=float)
-    parser.add_argument("--agg_genomic_dis_weight", default=0, type=float)
+    parser.add_argument("--constraint_opt", default=-1, type=float)
+    parser.add_argument("--constraint_penalty", default=0, type=float)
     parser.add_argument("--dis_factor", default=1, type=float)
     
 
@@ -896,7 +947,7 @@ def main():
         normalize_snm3c=args.normalize, outdir=args.outdir, name=args.name, intramol_only=args.intramol_only,
         infer_nu=args.infer_nu, infer_q=args.infer_q, infer_a=args.infer_a,
         obj_type=args.obj_type, weights_exponent=args.weights_exponent,
-        agg_genomic_dis_opt=args.agg_genomic_dis_opt, agg_genomic_dis_weight=args.agg_genomic_dis_weight,
+        constraint_opt=args.constraint_opt, constraint_penalty=args.constraint_penalty,
         dis_factor=args.dis_factor, init=init,
         seed=args.seed, max_iter=args.max_iter, factr=args.factr, maxls=args.maxls,
         pgtol=args.pgtol, jitted=args.jitted)
