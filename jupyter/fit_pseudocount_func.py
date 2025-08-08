@@ -387,47 +387,11 @@ def estimate_logistic_param(data, intramol_only=False, infer_nu=False, infer_q=F
 
     # Get bounds
     if bounds is None:
-        if True:  # note='kmax-4_buffer1e-5_d0min50p';
-            buffer = 1e-5
-            # bound_k = [-np.inf, 0 - buffer]  # k < 0
-            bound_k = [-np.inf, -4]  # k < -4
-            # bound_d0 = [0, np.inf]  # d0 >= 0  # XXX ************************
-            # bound_d0 = [0, 5]  # 0 <= d0 <= 5  # XXX ************************
-            # bound_d0 = [-np.inf, np.inf]  # no bounds on d0  # XXX ************************
-            # bound_d0 = [-5, 5]  # -5 <= d0 <= 5  # XXX ************************
-            if infer_nu:
-                bound_d0 = [data.nghbr_dis_quantiles[0.5], data.nghbr_dis_quantiles[0.999]]
-            else:
-                bound_d0 = [data.nghbr_dis_quantiles[0.001], data.nghbr_dis_quantiles[0.999]]
-            bound_nu = [0 + buffer, 1]  # 0 < nu <= 1  # XXX ************************
-            # bound_nu = [0 + buffer, np.inf]  # nu > 0  # XXX ************************
-
-        if True:  # note='buffer10';
-            buffer=1e-10
-            bound_k = [-np.inf, 0 - buffer]  # k < 0
-            bound_d0 = [0, data.nghbr_dis_quantiles[1]]
-            bound_nu = [0 + buffer, 2]
-        # if True:  # note='buffer8';
-        #     buffer=1e-8
-        #     bound_k = [-np.inf, 0 - buffer]  # k < 0
-        #     bound_d0 = [0, data.nghbr_dis_quantiles[0.9999]]
-        #     bound_nu = [0 + buffer, 2]
-        # if True:  # note='buffer4_k-lt0_d0-gte0-lte9999p_nu-lte2';
-        #     buffer=1e-4
-        #     bound_k = [-np.inf, 0 - buffer]  # k < 0
-        #     bound_d0 = [0, data.nghbr_dis_quantiles[0.9999]]
-        #     bound_nu = [0 + buffer, 2]
-        # if False:  # note='nu1e-8_buffer1e-4';
-        #     # buffer = 1e-8
-        #     buffer=1e-4
-        #     bound_k = [-np.inf, -1]  # k < -1
-        #     bound_d0 = [data.nghbr_dis_quantiles[0.001], data.nghbr_dis_quantiles[0.999]]
-        # if data.dis_factor != 1:  # dis_factor=1e8; note="dfact$dis_factor"'_buffer1e-8';
-        #     print(f"! {data.dis_factor=:g}")
-        #     buffer = 1e-8
-        #     bound_k = [-np.inf, -1]  # k < -1
-        #     bound_d0 = [data.nghbr_dis_quantiles[0.001], data.nghbr_dis_quantiles[0.999]]
-        
+        buffer = 1e-8
+        bound_k = [-np.inf, 0 - buffer]  # k < 0
+        bound_d0 = [0, data.nghbr_dis_quantiles[1]]  # 0 <= d0 <= max(neighbor bead dist)
+        bound_nu = [0 + buffer, 2]  # 0 < nu <= 2  # XXX ************************
+        # bound_nu = [0 + buffer, np.inf]  # nu > 0  # XXX ************************
         bound_q = [0 + buffer, np.inf]  # q > 0
         bound_a = [0, 1]  # 0 <= a <= 1
         bounds = [np.array(bound_k, ndmin=2), np.array(bound_d0, ndmin=2)]
