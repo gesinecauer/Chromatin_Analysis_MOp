@@ -496,19 +496,27 @@ def print_infer_results_pseudocounts(d, infer_nu=False, infer_q=False, infer_a=F
 # ===================================================================================================================
 # ===================================================================================================================
 
-def setup_dist_decay_obj(genomic_dis, chrom, snm3c, constraint_opt):
+def setup_dist_decay_obj(genomic_dis, chrom, snm3c, constraint_opt, version2=True):
     tmp = pd.DataFrame.from_dict(
         dict(genomic_dis=genomic_dis, chrom=chrom, snm3c=snm3c))
     cutoff = tmp.groupby('chrom').genomic_dis.max().min()
 
     tmp['weight'] = 1
     if constraint_opt == 0:
+        if version2:
+            raise ValueError('not this. probably.')
         cutoff = 1
     elif constraint_opt < 0:
         tmp['weight'] = tmp.genomic_dis.pow(float(constraint_opt))
+        if version2:
+            cutoff = tmp.groupby('chrom').genomic_dis.max().max()  # No cutoff
     elif constraint_opt <= 1:  # Is in the range (0, 1]
+        if version2:
+            raise ValueError('not this. probably.')
         cutoff = cutoff * constraint_opt
     else:  # Is > 1
+        if version2:
+            raise ValueError('not this.')
         cutoff = tmp.groupby('chrom').genomic_dis.max().max()  # No cutoff
         tmp.set_index(['chrom', 'genomic_dis'], inplace=True)
         tmp['weight'] = tmp.groupby(level=[0, 1]).size().pow(constraint_opt)
@@ -524,6 +532,9 @@ def setup_dist_decay_obj(genomic_dis, chrom, snm3c, constraint_opt):
         'weight': lambda x: x.iloc[0]}).sort_values('sort_order').drop('sort_order', axis=1)
     agg['category'] = -1
     agg.loc[agg['mask'], 'category'] = np.arange(agg['mask'].sum(), dtype=int)
+    if version2:
+        agg['weight'] *= agg['n']  # Also weight by nbins (to make it proportional)
+        print("~~~~~~~~~~~~~~~~~ CONSTRAINT VERSION 2", flush=True)
 
     df = tmp[['sort_order']].join(agg).sort_values('sort_order')
 
