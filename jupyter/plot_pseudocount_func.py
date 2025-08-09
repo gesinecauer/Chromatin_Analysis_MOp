@@ -105,7 +105,7 @@ def get_pseudocounts(matrix_df, sc_dis, transfer_func, transfer_func_kwargs=None
     matrix_df_ambig = matrix_df_ambig.groupby(grp_cols, dropna=False).mean()
     matrix_df_ambig.reset_index(level=np.arange(len(grp_cols)).tolist(), inplace=True)
 
-    # Optimally rescale pseudocounts (MLE of MSE)
+    # Optimally rescale snm3c (MLE of MSE)
     matrix_df_ambig['chromnum'] = matrix_df_ambig.chrom.str.replace('chr', '', regex=False).astype(int)
     if snm3c_are_normalized:
         # for col in ('pc_mean', 'pc_med'):  # FIXME select mean/median as arg when running the func...
@@ -284,12 +284,14 @@ def plot_best_result(matrix_df, sc_dis, results_df, plot=True):
     return pearson_r, (matrix_df, matrix_df_ambig)
 
 
-def plot_transfer_func(sc_dis, func, func_kwargs=None, title=None, xmax=None, make_fig=True,
+def plot_transfer_func(sc_dis, func, func_kwargs=None, title=None, xmin=0, xmax=None, make_fig=True,
                        show=True, figsize=(3, 2), dpi=None, alpha=1, linewidth=None, color=None,
                        linestyle=None):
+    if xmin is None:
+        xmin = 0
     if xmax is None:
         xmax = np.quantile(sc_dis.values[~np.isnan(sc_dis.values)], 0.99)
-    x = np.linspace(0, xmax, num=100)
+    x = np.linspace(xmin, xmax, num=100)
     if func_kwargs is None:
         y = func(x)
     else:
@@ -309,7 +311,7 @@ def plot_transfer_func(sc_dis, func, func_kwargs=None, title=None, xmax=None, ma
             fig.set_size_inches(figsize)
     plt.plot(x, y, label=' '.join(info), alpha=alpha, linewidth=linewidth,
              color=color, linestyle=linestyle)
-    plt.xlim(0, xmax)
+    plt.xlim(xmin, xmax)
     if title is None:
         title = '\n'.join(info)
     plt.title(title)
@@ -322,7 +324,7 @@ def plot_transfer_func(sc_dis, func, func_kwargs=None, title=None, xmax=None, ma
 
 
 def plot_transfer_func_multiple(sc_dis, kwargs_per_line, title=None, figsize=(6, 4), dpi=None,
-                                linewidth=2, xmax=2.5):
+                                linewidth=2, xmin=0, xmax=2.5):
     make_fig = True
     for kwargs in kwargs_per_line:
         if 'color' not in kwargs:
@@ -330,9 +332,9 @@ def plot_transfer_func_multiple(sc_dis, kwargs_per_line, title=None, figsize=(6,
         if 'linestyle' not in kwargs:
             kwargs['linestyle'] = None
         plot_transfer_func(
-            sc_dis, func=kwargs['func'], func_kwargs=kwargs['func_kwargs'], title="Transfer functions", xmax=xmax,
-            make_fig=make_fig, show=False, figsize=figsize, dpi=dpi, alpha=0.5, linewidth=linewidth,
-            color=kwargs['color'], linestyle=kwargs['linestyle'])
+            sc_dis, func=kwargs['func'], func_kwargs=kwargs['func_kwargs'], title="Transfer functions",
+            xmin=xmin, xmax=xmax, make_fig=make_fig, show=False, figsize=figsize, dpi=dpi, alpha=0.5,
+            linewidth=linewidth, color=kwargs['color'], linestyle=kwargs['linestyle'])
         make_fig = False
     plt.legend()
     plt.show()

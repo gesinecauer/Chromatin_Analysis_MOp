@@ -335,16 +335,20 @@ def obj_eval_pseudocounts(X, data, intramol_only=False, infer_nu=False,
             agg_mse = jnp.mean(jnp.square(agg_counts - data.agg_snm3c))
         else:
             agg_mse = jnp.average(jnp.square(agg_counts - data.agg_snm3c), weights=data.agg_weight)
+        aux = {'main': obj}
         obj = obj + data.agg_penalty * agg_mse
-    
+        aux['const'] = agg_mse
+        aux['obj'] = obj
+    else:
+        aux = obj
 
-    return obj
+    return obj, aux
 
 
-grad_eval_pseudocounts = grad(obj_eval_pseudocounts)
+grad_eval_pseudocounts = grad(obj_eval_pseudocounts, has_aux=True)
 obj_eval_pseudocounts_jit = jit(
     obj_eval_pseudocounts, static_argnames=['data', 'intramol_only', 'infer_nu', 'infer_q', 'infer_a', 'obj_type'])
-grad_eval_pseudocounts_jit = grad(obj_eval_pseudocounts_jit)
+grad_eval_pseudocounts_jit = grad(obj_eval_pseudocounts_jit, has_aux=True)
 
 
 def obj_wrap(X, data, intramol_only=False, infer_nu=False, infer_q=False,
@@ -354,13 +358,13 @@ def obj_wrap(X, data, intramol_only=False, infer_nu=False, infer_q=False,
     else:
         objective_func = obj_eval_pseudocounts
     
-    obj = objective_func(
+    obj, aux = objective_func(
         X, data=data, intramol_only=intramol_only, infer_nu=infer_nu,
         infer_q=infer_q, infer_a=infer_a, obj_type=obj_type)
     if not isinstance(obj, float) and obj.size > 1:
         obj = sum(obj)
     if verbose:
-        print_iter(X, infer_nu=infer_nu, infer_q=infer_q, infer_a=infer_a, note=obj)
+        print_iter(X, infer_nu=infer_nu, infer_q=infer_q, infer_a=infer_a, note=aux)
     return obj
 
 
@@ -370,10 +374,11 @@ def grad_wrap(X, data, intramol_only=False, infer_nu=False, infer_q=False,
         gradient_func = grad_eval_pseudocounts_jit
     else:
         gradient_func = grad_eval_pseudocounts
-    
-    return np.array(gradient_func(
+
+    res, _ = gradient_func(
         X, data=data, intramol_only=intramol_only, infer_nu=infer_nu,
-        infer_q=infer_q, infer_a=infer_a, obj_type=obj_type)).ravel()
+        infer_q=infer_q, infer_a=infer_a, obj_type=obj_type)
+    return np.array(res).ravel()
 
 
 def estimate_logistic_param(data, intramol_only=False, infer_nu=False, infer_q=False,
@@ -390,7 +395,7 @@ def estimate_logistic_param(data, intramol_only=False, infer_nu=False, infer_q=F
         buffer = 1e-8
         bound_k = [-np.inf, 0 - buffer]  # k < 0
         bound_d0 = [0, data.nghbr_dis_quantiles[1]]  # 0 <= d0 <= max(neighbor bead dist)
-        bound_nu = [0 + buffer, 2]  # 0 < nu <= 2  # XXX ************************
+        bound_nu = [0 + buffer, 5]  # 0 < nu <= 5  # XXX ************************
         # bound_nu = [0 + buffer, np.inf]  # nu > 0  # XXX ************************
         bound_q = [0 + buffer, np.inf]  # q > 0
         bound_a = [0, 1]  # 0 <= a <= 1
@@ -464,8 +469,10 @@ def print_iter(X, infer_nu=False, infer_q=False, infer_a=False, note=None):
         to_print += f"  a={a:<11.6g}"
     if isinstance(note, (str, int)):
         to_print += f" ... {note}"
+    elif isinstance(note, dict):
+        to_print += f" ... obj={note['obj']:<15.10g}  M={note['main']:<10.5g}  C={note['const']:<10.5g}"
     elif note is not None:
-        to_print += f" ... obj={note:.10g}"
+        to_print += f" ... obj={note:<15.10g}"
     print(to_print, flush=True)
 
 
@@ -497,10 +504,16 @@ def setup_dist_decay_obj(genomic_dis, chrom, snm3c, constraint_opt):
     tmp['weight'] = 1
     if constraint_opt == 0:
         cutoff = 1
-    elif constraint_opt > 0:
-        cutoff = cutoff * constraint_opt
-    else:
+    elif constraint_opt < 0:
         tmp['weight'] = tmp.genomic_dis.pow(float(constraint_opt))
+    elif constraint_opt <= 1:  # Is in the range (0, 1]
+        cutoff = cutoff * constraint_opt
+    else:  # Is > 1
+        cutoff = tmp.groupby('chrom').genomic_dis.max().max()  # No cutoff
+        tmp.set_index(['chrom', 'genomic_dis'], inplace=True)
+        tmp['weight'] = tmp.groupby(level=[0, 1]).size().pow(constraint_opt)
+        tmp.reset_index(inplace=True)
+
     tmp['mask'] = tmp.genomic_dis <= cutoff
     tmp['n'] = 1
     tmp['sort_order'] = np.arange(len(tmp), dtype=int)
@@ -513,6 +526,9 @@ def setup_dist_decay_obj(genomic_dis, chrom, snm3c, constraint_opt):
     agg.loc[agg['mask'], 'category'] = np.arange(agg['mask'].sum(), dtype=int)
 
     df = tmp[['sort_order']].join(agg).sort_values('sort_order')
+
+    if constraint_opt > 1:
+        assert (df.weight == df.n.pow(constraint_opt)).all()
     
     agg_snm3c = np.asarray(agg.loc[agg['mask'], 'snm3c'].values, order='C')
     agg_n = np.asarray(agg.loc[agg['mask'], 'n'].values, order='C')
@@ -534,7 +550,7 @@ class InferArgs(object):
             dis_factor = 1.
         self.snm3c = snm3c
         self.snm3c_are_normed = snm3c_are_normed
-        if normalize_snm3c:
+        if snm3c_are_normed:
             self.chrom = chrom
         else:
             self.chrom = None
@@ -803,6 +819,12 @@ def load_and_infer(dir_matrix2d, mcool_file, resolution, normalize_snm3c=True, o
                    obj_type='pearson', constraint_opt=-1, constraint_penalty=0,
                    weights_exponent=None, init=None, bounds=None, seed=0,
                    max_iter=1e20, factr=1e7, maxls=20, pgtol=1e-05, jitted=True):
+    df_input = pd.Series(dict(
+        resolution=resolution, normalize_snm3c=normalize_snm3c,
+        seed=seed, obj_type=obj_type, infer_nu=infer_nu, weights_exponent=weights_exponent,
+        constraint_penalty=constraint_penalty, constraint_opt=constraint_opt, 
+        intramol_only=intramol_only, factr=factr, pgtol=pgtol, maxls=maxls,
+        max_iter=max_iter, init=init, bounds=bounds)).rename('value').to_frame()
 
     data_outdir = outdir
     if data_outdir is not None and (not re.search(r'(.+/|^)nobackup(/.*|$)', data_outdir)):
@@ -822,26 +844,10 @@ def load_and_infer(dir_matrix2d, mcool_file, resolution, normalize_snm3c=True, o
     assert isinstance(data.snm3c, np.ndarray) and data.snm3c.size
     assert isinstance(data.dis, np.ndarray) and data.dis.size
 
-    # nbins = data.snm3c.size
-    # dis_sc_intra = data.dis[:nbins * 2].copy()
-    # dis_sc_intra[dis_sc_intra == 0] = np.nan
-    # dis_sc_intra_locusmin = np.nanmin(dis_sc_intra, axis=1)
-    # dis_sc_intra_locusmin_ambig = np.nanmin(dis_sc_intra_locusmin.reshape(-1, nbins), axis=0) # HERE
-    # print(f"\n\n\n{(data.snm3c == 0).sum()=}\n{nbins=}, {data.dis.shape=}, {dis_sc_intra_locusmin.shape=}, {dis_sc_intra_locusmin_ambig.shape=}\n\n")
-    # for q in [0.5, 0.9, 0.99, 0.999, 0.9999, 1]:
-    #     print(f"{q * 100:g}%\t{np.quantile(dis_sc_intra_locusmin_ambig, q):g}")
-    # exit(0)
-
     if not jitted:
         _setup_jax(traceback=False, debug_nan_inf=True)
 
-    df_input = pd.Series({
-        'seed': seed, 'obj_type': obj_type, 'weights_exponent': weights_exponent,
-        'intramol_only': intramol_only, 'factr': factr, 'pgtol': pgtol, 'maxls': maxls,
-        'max_iter': max_iter, 'init': init, 'bounds': bounds}).to_frame().rename(
-        {0: 'value'}, axis=1)
     df_input['type'] = 'input'
-
     print("\nINFERRING WITH:\n" + df_input.value.to_string(float_format=lambda x: f"{x:g}") + "\n", flush=True)
     d = estimate_logistic_param(
         data=data, intramol_only=intramol_only, infer_nu=infer_nu, infer_q=infer_q,
@@ -851,7 +857,8 @@ def load_and_infer(dir_matrix2d, mcool_file, resolution, normalize_snm3c=True, o
 
     d['grad'] = d['grad'].max()
     d['params'] = d['params'].tolist()
-    df_res = pd.Series(d).to_frame().rename({0: 'value'}, axis=1)
+    d['scaling_fact_mean'] = d['scaling_factor'].mean()
+    df_res = pd.Series(d).rename('value').drop(['scaling_factor', 'params']).to_frame()
     df_res['type'] = 'results'
 
     df = pd.concat([df_input, df_res]).reset_index().rename(
