@@ -543,7 +543,7 @@ def setup_dist_decay_obj(genomic_dis, chrom, snm3c, constraint_opt, version2=Tru
     
     agg_snm3c = np.asarray(agg.loc[agg['mask'], 'snm3c'].values, order='C')
     agg_n = np.asarray(agg.loc[agg['mask'], 'n'].values, order='C')
-    if constraint_opt < 0:
+    if not (agg.loc[agg['mask'], 'weight'] == 1).all():
         agg_weight = np.asarray(agg.loc[agg['mask'], 'weight'].values, order='C')
     else:
         agg_weight = None
