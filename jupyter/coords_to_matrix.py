@@ -14,8 +14,12 @@ from process_loci import get_index_of_loci
 from topsy.analysis.compare_distances import make_matrix_df
 
 
-def logistic(d, k, d0, nu=1, q=1):
-    counts = np.exp(-np.log1p(q * np.exp(-k * (d - d0))) / nu)
+def logistic(d, k, d0, nu=1, q=1, scale_counts_by=1):
+    if scale_counts_by == 1:
+        counts = np.exp(-np.log1p(q * np.exp(-k * (d - d0))) / nu)
+    else:
+        counts = np.exp(np.log(scale_counts_by) - np.log1p(
+            q * np.exp(-k * (d - d0))) / nu)
 
     # counts = -k * (d - d0)
     # counts = np.log1p(q * np.exp(counts))
@@ -34,7 +38,7 @@ def logistic(d, k, d0, nu=1, q=1):
     return counts
 
 
-def get_transfer_func_params(contact_th=None, alpha=None, k=None, d0=None, nu=None, sc_dist_vec=None):
+def get_transfer_func_params(contact_th=None, alpha=None, k=None, d0=None, nu=None, scale_counts_by=None, sc_dist_vec=None):
     if (contact_th is None) + (alpha is None) + (k is None or d0 is None or nu is None) != 2:
         raise ValueError("Must input either: \n- contact_th\n- alpha\n- k, d0, & nu."
                          f"\nInput: {contact_th=}, {alpha=}, {k=}, {d0=}, {nu=}")
@@ -54,12 +58,14 @@ def get_transfer_func_params(contact_th=None, alpha=None, k=None, d0=None, nu=No
             raise ValueError(f"k should be < 0, inputted {k=:g}")
         if nu <= 0:
             raise ValueError(f"nu should be > 0, inputted {nu=:g}")
+    if scale_counts_by is None:
+        scale_counts_by = 1
     
-    return contact_th, alpha, k, d0, nu
+    return contact_th, alpha, k, d0, nu, scale_counts_by
 
 
 def generate_counts_from_sc_dist(sc_dist_vec, transfer_func_kwargs, idx=None, exclude_missing_loci=False):
-    contact_th, alpha, k, d0, nu = get_transfer_func_params(**transfer_func_kwargs, sc_dist_vec=None)
+    contact_th, alpha, k, d0, nu, scale_counts_by = get_transfer_func_params(**transfer_func_kwargs, sc_dist_vec=None)
 
     # In how many cells is each pair of loci detected?
     has_data = np.invert(np.isnan(sc_dist_vec)).astype(int).sum(axis=0)
@@ -68,13 +74,19 @@ def generate_counts_from_sc_dist(sc_dist_vec, transfer_func_kwargs, idx=None, ex
     # Generate pseudo-counts
     if contact_th is not None:  # Use contact threshold approach
         pass_thresh = (sc_dist_vec < contact_th).astype(int).sum(axis=0)
-        res = squareform(pass_thresh / has_data)
+        counts_vec = pass_thresh / has_data
+        if scale_counts_by != 1:
+            counts_vec *= scale_counts_by
+        res = squareform(counts_vec)
     elif alpha is not None:  # Generate sc counts via 'c = d^alpha' transfer function
         counts_vec = np.nanmean(np.power(sc_dist_vec, alpha), axis=0)
         print(f"{counts_vec.max()=:g}", flush=True)
+        if scale_counts_by != 1:
+            counts_vec *= scale_counts_by
         res = squareform(counts_vec)
     else:  # Generate counts via logistic transfer function
-        counts_vec = np.nanmean(logistic(sc_dist_vec, k=k, d0=d0, nu=nu), axis=0)
+        counts_vec = np.nanmean(logistic(
+            sc_dist_vec, k=k, d0=d0, nu=nu, scale_counts_by=scale_counts_by), axis=0)
         res = squareform(counts_vec)
 
     # Add missing data if desired
@@ -153,7 +165,7 @@ def save_sc_dis_per_locus(sc_dist_vec, idx, outfile, lengths_df):
 
 
 def process_sc_distances(sc_dna_coords, idx, outdir, lengths_df, transfer_func_kwargs, name=None, redo=False):
-    contact_th, alpha, k, d0, nu = get_transfer_func_params(**transfer_func_kwargs)  # Check params
+    contact_th, alpha, k, d0, nu, scale_counts_by = get_transfer_func_params(**transfer_func_kwargs)  # Check params
 
     os.makedirs(outdir, exist_ok=True)
     if name is not None and name != "":
@@ -167,11 +179,15 @@ def process_sc_distances(sc_dna_coords, idx, outdir, lengths_df, transfer_func_k
     mean_dist_matrix_file = os.path.join(outdir, f'{name}distances.mean.npy')
     # sc_counts_vec_file = os.path.join(outdir, f'{name}counts.vector_per_cell.cutoff{contact_th:g}.npy')
     if contact_th is not None:
-        mean_counts_matrix_file = os.path.join(outdir, f'{name}counts.mean.cutoff{contact_th:g}.npy')
+        mean_counts_matrix_file = os.path.join(outdir, f'{name}counts.mean.cutoff{contact_th:g}')
     elif alpha is not None:
-        mean_counts_matrix_file = os.path.join(outdir, f'{name}counts.mean.alpha{alpha:.4g}.npy')
+        mean_counts_matrix_file = os.path.join(outdir, f'{name}counts.mean.alpha{alpha:.4g}')
     else:
-        mean_counts_matrix_file = os.path.join(outdir, f'{name}counts.mean.k{k:.4g}_m{d0:.4g}_v{nu:.4g}.npy')
+        mean_counts_matrix_file = os.path.join(outdir, f'{name}counts.mean.k{k:.4g}_m{d0:.4g}_v{nu:.4g}')
+    if scale_counts_by == 1:
+        mean_counts_matrix_file = f"{mean_counts_matrix_file}.npy"
+    else:
+        mean_counts_matrix_file = f"{mean_counts_matrix_file}.scale{scale_counts_by:.3g}.npy"
     nonmissing_per_locus_pair_file = os.path.join(outdir, f'{name}num_nonmissing.npy')
     sc_dist_per_locus_file = os.path.join(outdir, f'{name}distances.per_locus.tsv.gz')
     sc_dist_intramol_file = os.path.join(outdir, f'{name}distances.intramol.tsv.gz')
@@ -260,9 +276,10 @@ def add_missing_loci(df, spacing=2.5):
 
 
 def process_sc_dna_coords(input_file, outdir=None, min_nonmissing_per_phased_locus=0.05, nmol_per_hmlg_ratio=1,
-                          spacing=2.5, contact_th=None, alpha=None, k=None, d0=None, nu=None, redo=False, name=None, verbose=False):
+                          spacing=2.5, contact_th=None, alpha=None, k=None, d0=None, nu=None, scale_counts_by=None,
+                          redo=False, name=None, verbose=False):
 
-    transfer_func_kwargs = dict(contact_th=contact_th, alpha=alpha, k=k, d0=d0, nu=nu)
+    transfer_func_kwargs = dict(contact_th=contact_th, alpha=alpha, k=k, d0=d0, nu=nu, scale_counts_by=scale_counts_by)
     get_transfer_func_params(**transfer_func_kwargs)  # Check params
 
     # Assign defaults
@@ -348,7 +365,8 @@ def main():
     parser.add_argument("--alpha", type=float)
     parser.add_argument("--k", type=float)
     parser.add_argument("--d0", type=float)
-    parser.add_argument("--nu", type=float)
+    parser.add_argument("--nu", type=float) 
+    parser.add_argument("--scale_counts_by", type=float, default=1)
     # parser.add_argument("--chrom", type=str, nargs='+')
     parser.add_argument('--verbose', default=True, action='store_true')
     parser.add_argument('--silent', dest='verbose', default=True, action='store_false')
@@ -365,7 +383,8 @@ def main():
     process_sc_dna_coords(
         input_file=args.data, min_nonmissing_per_phased_locus=args.min_nonmissing_per_phased_locus,
         nmol_per_hmlg_ratio=nmol_per_hmlg_ratio, spacing=args.spacing, outdir=args.outdir, name=name,
-        contact_th=args.contact_th, alpha=args.alpha, k=args.k, d0=args.d0, nu=args.nu, verbose=args.verbose)
+        contact_th=args.contact_th, alpha=args.alpha, k=args.k, d0=args.d0, nu=args.nu,
+        scale_counts_by=args.scale_counts_by, verbose=args.verbose)
 
 
 if __name__ == "__main__":

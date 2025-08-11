@@ -48,7 +48,8 @@ def logistic(d, k, d0=0, nu=1, q=1, a=0, scale_snm3c_by=1):
     log_baz = log_bar / nu
     log_counts = -log_baz
     if scale_snm3c_by is not None and scale_snm3c_by != 1:
-        log_counts = log_counts + scale_snm3c_by
+        print(np.log(scale_snm3c_by), log_counts.min().min(), log_counts.max().max())
+        log_counts = log_counts + np.log(scale_snm3c_by)
     counts = np.exp(log_counts)
     # counts = 1 / np.power(1 + q * np.exp(tmp), 1 / nu)
     if a != 0:

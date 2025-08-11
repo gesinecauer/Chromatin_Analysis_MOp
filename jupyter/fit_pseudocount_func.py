@@ -127,7 +127,7 @@ def parse_X(X, infer_nu=False, infer_q=False, infer_a=False):
     return k, d0, nu, q, a
 
 
-def logistic_jax(d, X, infer_nu=False, infer_q=False, infer_a=False, scale_snm3c_by=1):
+def logistic_jax(d, X, infer_nu=False, infer_q=False, infer_a=False, ln_scale_snm3c_by=1):
     k, d0, nu, q, a = parse_X(X, infer_nu=infer_nu, infer_q=infer_q, infer_a=infer_a)
 
     tmp = -k * (d - d0)
@@ -157,8 +157,8 @@ def logistic_jax(d, X, infer_nu=False, infer_q=False, infer_a=False, scale_snm3c
     
     log_baz = log_bar / nu
     log_counts = -log_baz
-    if scale_snm3c_by is not None and scale_snm3c_by != 1:
-        log_counts = log_counts + scale_snm3c_by
+    if ln_scale_snm3c_by is not None and ln_scale_snm3c_by != 0:
+        log_counts = log_counts + ln_scale_snm3c_by
     
     counts = jnp.exp(log_counts)
     # baz = jnp.power(bar, 1 / nu)
@@ -230,7 +230,7 @@ def get_bulk_pseudocounts(X, data, intramol_only=False, infer_nu=False,
         mask_sc,
         logistic_jax(
             dis_sc, X, infer_nu=infer_nu, infer_q=infer_q, infer_a=infer_a,
-            scale_snm3c_by=data.scale_snm3c_by),
+            ln_scale_snm3c_by=data.ln_scale_snm3c_by),
         jnp.zeros_like(dis_sc))
     mask_bulk = mask_sc.sum(axis=1)
     counts = jnp.where(
@@ -549,12 +549,14 @@ class InferArgs(object):
             self.chrom = None
         self.dis = sc_dis_arr
 
-        if scale_snm3c_by is None:
-            scale_snm3c_by = 1.
-        if scale_snm3c_by != 1:
+        if scale_snm3c_by is None or scale_snm3c_by == 1:
+            self.scale_snm3c_by = 1.
+            self.ln_scale_snm3c_by = 0.
+        else:
+            self.scale_snm3c_by = float(scale_snm3c_by)
+            self.ln_scale_snm3c_by = np.log(scale_snm3c_by)
             self.snm3c *= scale_snm3c_by
             print(f'\tSCALE SNM3C BY ~~~~~~~~~~~~~~~~~~~~~~~~~~ {scale_snm3c_by=}\n', flush=True)
-        self.scale_snm3c_by = float(scale_snm3c_by)
 
         if constraint_penalty is None or constraint_penalty == 0:
             self.agg_snm3c = None
@@ -720,7 +722,7 @@ def load_snm3c(mcool_file, resolution=2.5, normalize=True, mask_last_locus_in_ch
     return snm3c, clr_bins, lengths_clr
 
 
-def load(dir_matrix2d, mcool_file, lengths_file=None, resolution=2.5, normalize_snm3c=True, scale_snm3c_by=1, verbose=True):
+def load(dir_matrix2d, mcool_file, lengths_file=None, resolution=2.5, normalize_snm3c=True, verbose=True):
     # Load snm3c-seq data via cooler
     snm3c, clr_bins, lengths_clr = load_snm3c(
         mcool_file, resolution=resolution, normalize=normalize_snm3c, verbose=verbose)
