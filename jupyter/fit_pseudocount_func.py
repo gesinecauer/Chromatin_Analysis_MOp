@@ -42,7 +42,7 @@ from jax.nn import relu
 
 def prep_data_for_inference(dir_matrix2d, mcool_file, scale_snm3c_by=1,
                             resolution=2.5, normalize_snm3c=True, weights_exponent=None,
-                            constraint_opt=-1, constraint_penalty=0,
+                            constraint_opt=0, constraint_penalty=0, constraint_min_n=None,
                             data_outdir=None, name=None, remake_npzfile=False, verbose=True):
     snm3c_type = f"{'raw' if '.raw.' in mcool_file.lower() else 'q'}_snm3c"
     if name is None:
@@ -101,7 +101,8 @@ def prep_data_for_inference(dir_matrix2d, mcool_file, scale_snm3c_by=1,
         snm3c=snm3c, sc_dis_arr=sc_dis_arr, genomic_dis=genomic_dis, chrom=chrom,
         nghbr_dis_quantiles=nghbr_dis_quantiles, snm3c_are_normed=normalize_snm3c,
         constraint_opt=constraint_opt, constraint_penalty=constraint_penalty,
-        weights_exponent=weights_exponent, scale_snm3c_by=scale_snm3c_by)
+        constraint_min_n=constraint_min_n, weights_exponent=weights_exponent,
+        scale_snm3c_by=scale_snm3c_by)
 
     return data
 
@@ -332,10 +333,22 @@ def obj_eval_pseudocounts(X, data, intramol_only=False, infer_nu=False,
         agg_counts = jnp.histogram(
             data.agg_category, weights=counts[data.agg_mask], bins=data.agg_n.size,
             density=False)[0] / data.agg_n
-        if data.agg_weight is None:
-            agg_mse = jnp.mean(jnp.square(agg_counts - data.agg_snm3c))
+
+        if data.constraint_v3:
+            agg_counts_nghbr = agg_counts[data.agg_nghbr_idx]
+
+            # agg_counts_ratio = agg_counts / agg_counts_nghbr
+            mask = agg_counts_nghbr != 0
+            agg_counts_ratio = jnp.where(mask, agg_counts, 0) / jnp.where(mask, agg_counts_nghbr, 1)
+
+            agg_diff = agg_counts_ratio - data.agg_snm3c_ratio
         else:
-            agg_mse = jnp.average(jnp.square(agg_counts - data.agg_snm3c), weights=data.agg_weight)
+            agg_diff = agg_counts - data.agg_snm3c
+        
+        if data.agg_weight is None:
+            agg_mse = jnp.mean(jnp.square(agg_diff))
+        else:
+            agg_mse = jnp.average(jnp.square(agg_diff), weights=data.agg_weight)
         aux = {'main': obj}
         obj = obj + data.agg_penalty * agg_mse
         aux['const'] = agg_mse
@@ -497,7 +510,14 @@ def print_infer_results_pseudocounts(d, infer_nu=False, infer_q=False, infer_a=F
 # ===================================================================================================================
 # ===================================================================================================================
 
-def setup_dist_decay_obj(genomic_dis, chrom, snm3c, constraint_opt):
+
+def compare_to_genomic_nghbr(df):
+    df['nghbr_idx'] = df.loc[df.index.get_level_values(1) == 1, 'category'].values.item()
+    df['snm3c_ratio'] = df.snm3c / df.loc[df.index.get_level_values(1) == 1, 'snm3c'].values.item()
+    return df
+    
+
+def setup_dist_decay_obj(genomic_dis, chrom, snm3c, constraint_opt=0, min_n=None):
     tmp = pd.DataFrame.from_dict(
         dict(genomic_dis=genomic_dis, chrom=chrom, snm3c=snm3c))
 
@@ -505,7 +525,7 @@ def setup_dist_decay_obj(genomic_dis, chrom, snm3c, constraint_opt):
     if constraint_opt != 0:
         tmp['weight'] = tmp.genomic_dis.pow(float(constraint_opt))
 
-    tmp['mask'] = True # FIXME temp
+    tmp['mask'] = True
     tmp['n'] = 1
     tmp['sort_order'] = np.arange(len(tmp), dtype=int)
     tmp.set_index(['chrom', 'genomic_dis'], inplace=True)
@@ -513,15 +533,14 @@ def setup_dist_decay_obj(genomic_dis, chrom, snm3c, constraint_opt):
     agg = tmp.groupby(level=[0, 1]).agg({
         'snm3c': 'mean', 'n': 'sum', 'sort_order': 'min', 'mask': lambda x: x.iloc[0],
         'weight': lambda x: x.iloc[0]}).sort_values('sort_order').drop('sort_order', axis=1)
+    tmp['mask'] = True
+    if min_n is not None:
+        agg.loc[agg.n < min_n, 'mask'] = False
     agg['category'] = -1
     agg.loc[agg['mask'], 'category'] = np.arange(agg['mask'].sum(), dtype=int)
     agg['weight'] *= agg['n']  # Also weight by nbins (to make it proportional)
-
-    # agg.index.get_level_values(1)
-    # agg['nghbr_idx'] = agg.groupby(level=0).apply(
-    #     lambda x: x.loc[1, 'category'], include_groups=False)
-    # agg['snm3c_ratio'] = agg.groupby(level=0).apply(
-    #     lambda x: x.snm3c / x.loc[1, 'snm3c'], include_groups=False)
+    agg = agg.groupby(level=0).apply(
+        compare_to_genomic_nghbr, include_groups=False).reset_index(level=0, drop=True)
 
     df = tmp[['sort_order']].join(agg).sort_values('sort_order')
     
@@ -531,20 +550,19 @@ def setup_dist_decay_obj(genomic_dis, chrom, snm3c, constraint_opt):
         agg_weight = np.asarray(agg.loc[agg['mask'], 'weight'].values, order='C')
     else:
         agg_weight = None
-
-    # agg_snm3c_ratio = np.asarray(agg.loc[agg['mask'], 'snm3c_ratio'].values, order='C')
-    # agg_nghbr_idx = np.asarray(agg.loc[agg['mask'], 'nghbr_idx'].values, order='C')
+    agg_snm3c_ratio = np.asarray(agg.loc[agg['mask'], 'snm3c_ratio'].values, order='C')
+    agg_nghbr_idx = np.asarray(agg.loc[agg['mask'], 'nghbr_idx'].values, order='C')
         
     agg_category = np.asarray(df.loc[df['mask'], 'category'].values, order='C')
     agg_mask = np.asarray(df['mask'].values, order='C')
 
-    return agg_snm3c, agg_n, agg_weight, agg_category, agg_mask
+    return agg_snm3c, agg_n, agg_weight, agg_category, agg_mask, agg_snm3c_ratio, agg_nghbr_idx
 
 
 class InferArgs(object):
     def __init__(self, snm3c, sc_dis_arr, genomic_dis, chrom, nghbr_dis_quantiles,
-                 snm3c_are_normed=True, constraint_opt=-1, constraint_penalty=0,
-                 weights_exponent=None, scale_snm3c_by=1):        
+                 snm3c_are_normed=True, constraint_opt=0, constraint_penalty=0,
+                 constraint_min_n=None, constraint_v3=True, weights_exponent=None, scale_snm3c_by=1):        
         self.snm3c = snm3c
         self.snm3c_are_normed = snm3c_are_normed
         if snm3c_are_normed:
@@ -566,12 +584,21 @@ class InferArgs(object):
             self.agg_snm3c = None
             self.agg_penalty = 0
         else:
-            print(f'\tDIST DECAY CONSTRAINT ~~~~~~~~~~~~~~~~~~~~~~~~~~ penalty={constraint_penalty:g}, opt={constraint_opt:g}\n', flush=True)
+            if constraint_min_n is None and constraint_v3:
+                constraint_min_n = 4
+            if constraint_v3:
+                print(f'\tCONSTRAINT: DIST DECAY **V3** ~~~~~~~~~~~~~~~~~~ penalty={constraint_penalty:g}, opt={constraint_opt:g}, min_n={constraint_min_n}\n', flush=True)
+            else:
+                print(f'\tCONSTRAINT: genomic dist (V2) ~~~~~~~~~~~~~~~~~~ penalty={constraint_penalty:g}, opt={constraint_opt:g}, min_n={constraint_min_n}\n', flush=True)
+            self.constraint_v3 = constraint_v3
             self.agg_penalty = constraint_penalty
+            
             tmp = setup_dist_decay_obj(
                 genomic_dis=genomic_dis, chrom=chrom, snm3c=snm3c,
-                constraint_opt=constraint_opt)
-            self.agg_snm3c, self.agg_n, self.agg_weight, self.agg_category, self.agg_mask = tmp
+                constraint_opt=constraint_opt, min_n=constraint_min_n)
+            (self.agg_snm3c, self.agg_n, self.agg_weight, self.agg_category,
+             self.agg_mask, self.agg_snm3c_ratio, self.agg_nghbr_idx) = tmp
+            
 
         if isinstance(nghbr_dis_quantiles, (np.ndarray, tuple, list)):
             if isinstance(nghbr_dis_quantiles, np.ndarray) and nghbr_dis_quantiles.shape[1] == 2:
@@ -822,15 +849,15 @@ def load(dir_matrix2d, mcool_file, lengths_file=None, resolution=2.5, normalize_
 
 def load_and_infer(dir_matrix2d, mcool_file, resolution, normalize_snm3c=True, outdir=None, name=None,
                    intramol_only=False, scale_snm3c_by=1, infer_nu=False, infer_q=False, infer_a=False,
-                   obj_type='pearson', constraint_opt=-1, constraint_penalty=0,
+                   obj_type='pearson', constraint_opt=0, constraint_penalty=0, constraint_min_n=None,
                    weights_exponent=None, init=None, bounds=None, seed=0,
                    max_iter=1e20, factr=1e7, maxls=20, pgtol=1e-05, jitted=True):
     df_input = pd.Series(dict(
         resolution=resolution, normalize_snm3c=normalize_snm3c,
         seed=seed, obj_type=obj_type, infer_nu=infer_nu, weights_exponent=weights_exponent,
-        constraint_penalty=constraint_penalty, constraint_opt=constraint_opt, 
-        intramol_only=intramol_only, factr=factr, pgtol=pgtol, maxls=maxls,
-        max_iter=max_iter, init=init, bounds=bounds)).rename('value').to_frame()
+        constraint_penalty=constraint_penalty, constraint_opt=constraint_opt,
+        constraint_min_n=constraint_min_n, intramol_only=intramol_only, factr=factr, pgtol=pgtol,
+        maxls=maxls, max_iter=max_iter, init=init, bounds=bounds)).rename('value').to_frame()
 
     data_outdir = outdir
     if data_outdir is not None and (not re.search(r'(.+/|^)nobackup(/.*|$)', data_outdir)):
@@ -846,7 +873,8 @@ def load_and_infer(dir_matrix2d, mcool_file, resolution, normalize_snm3c=True, o
         dir_matrix2d, mcool_file=mcool_file, resolution=resolution,
         normalize_snm3c=normalize_snm3c, scale_snm3c_by=scale_snm3c_by,
         constraint_opt=constraint_opt, constraint_penalty=constraint_penalty,
-        weights_exponent=weights_exponent, data_outdir=data_outdir, name=name, verbose=True)
+        constraint_min_n=constraint_min_n, weights_exponent=weights_exponent,
+        data_outdir=data_outdir, name=name, verbose=True)
     assert isinstance(data.snm3c, np.ndarray) and data.snm3c.size
     assert isinstance(data.dis, np.ndarray) and data.dis.size
 
@@ -892,8 +920,9 @@ def main():
     parser.add_argument('--infer_a', default=False, action='store_true')
     parser.add_argument("--obj_type", type=str, default='rmse')
     parser.add_argument("--weights_exponent", default=None, type=int)
-    parser.add_argument("--constraint_opt", default=-1, type=float)
+    parser.add_argument("--constraint_opt", default=0, type=float)
     parser.add_argument("--constraint_penalty", default=0, type=float)
+    parser.add_argument("--constraint_min_n", type=int)
     parser.add_argument("--scale_snm3c_by", default=1, type=float)
     
 
@@ -925,7 +954,7 @@ def main():
         infer_nu=args.infer_nu, infer_q=args.infer_q, infer_a=args.infer_a,
         obj_type=args.obj_type, weights_exponent=args.weights_exponent,
         constraint_opt=args.constraint_opt, constraint_penalty=args.constraint_penalty,
-        scale_snm3c_by=args.scale_snm3c_by, init=init,
+        constraint_min_n=args.constraint_min_n, scale_snm3c_by=args.scale_snm3c_by, init=init,
         seed=args.seed, max_iter=args.max_iter, factr=args.factr, maxls=args.maxls,
         pgtol=args.pgtol, jitted=args.jitted)
 
