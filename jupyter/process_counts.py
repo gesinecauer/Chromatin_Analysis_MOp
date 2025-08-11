@@ -355,7 +355,7 @@ def save_sc_data(dir_matrix2d, lengths_df, dist_scale_factor, outdir, redo=False
 def load_and_filter_data(input_file, min_percentile_loci_cov,
                          min_nonmissing_per_phased_locus=0.05, nmol_per_hmlg_ratio=1,
                          spacing=2.5, contact_th=0.75, alpha=None, k=None, d0=None, nu=None,
-                         name=None, verbose=True):
+                         scale_counts_by=None, name=None, verbose=True):
     if name is None:
         name = re.sub(r'(^|.*/)cluster/([^/]+)(/.*|$)', r'\2', os.path.dirname(input_file))
     if nmol_per_hmlg_ratio >= 1000:
@@ -363,7 +363,8 @@ def load_and_filter_data(input_file, min_percentile_loci_cov,
     matrices, lengths_df, dir_matrix2d = process_sc_dna_coords(
         input_file=input_file, min_nonmissing_per_phased_locus=min_nonmissing_per_phased_locus,
         nmol_per_hmlg_ratio=nmol_per_hmlg_ratio, spacing=spacing, name=name,
-        contact_th=contact_th, alpha=alpha, k=k, d0=d0, nu=nu, verbose=False)
+        contact_th=contact_th, alpha=alpha, k=k, d0=d0, nu=nu, scale_counts_by=scale_counts_by,
+        verbose=False)
 
     # Additional filtering of loci by missingness across cells
     if verbose and min_percentile_loci_cov > 0:
@@ -386,13 +387,14 @@ def save_dataset(input_file, outdir, min_percentile_loci_cov=0.10, nreads=None, 
                  infer_alpha_mods='beta_from_intra_only', infer_alpha_dis='mean', num_infer_alpha=10,
                  only_include=None, redo=False, min_nonmissing_per_phased_locus=0.05,
                  nmol_per_hmlg_ratio=1, spacing=2.5, contact_th=None, alpha=None, k=None, d0=None,
-                 nu=None, name=None, verbose=True):
+                 nu=None, scale_counts_by=None, name=None, verbose=True):
 
     matrices, lengths_df, dir_matrix2d, name = load_and_filter_data(
         input_file, min_percentile_loci_cov=min_percentile_loci_cov,
         min_nonmissing_per_phased_locus=min_nonmissing_per_phased_locus,
         nmol_per_hmlg_ratio=nmol_per_hmlg_ratio, spacing=spacing,
-        contact_th=contact_th, alpha=alpha, k=k, d0=d0, nu=nu, name=name, verbose=verbose)
+        contact_th=contact_th, alpha=alpha, k=k, d0=d0, nu=nu, scale_counts_by=scale_counts_by,
+        name=name, verbose=verbose)
     matrix_df, dist_scale_factor = prep_matrix_df(lengths_df, matrices=matrices)
 
     # Get integer counts
@@ -491,6 +493,7 @@ def main():
     parser.add_argument("--k", type=float)
     parser.add_argument("--d0", type=float)
     parser.add_argument("--nu", type=float)
+    parser.add_argument("--scale_counts_by", type=float, default=1)
 
     # Verbosity
     parser.add_argument('--verbose', default=True, action='store_true')
@@ -512,7 +515,8 @@ def main():
         only_include=args.only_include, redo=args.redo,
         min_nonmissing_per_phased_locus=args.min_nonmissing_per_phased_locus,
         nmol_per_hmlg_ratio=nmol_per_hmlg_ratio,  spacing=args.spacing,
-        contact_th=args.contact_th, alpha=args.alpha, k=args.k, d0=args.d0, nu=args.nu, name=name, verbose=args.verbose)
+        contact_th=args.contact_th, alpha=args.alpha, k=args.k, d0=args.d0, nu=args.nu,
+        scale_counts_by=args.scale_counts_by, name=name, verbose=args.verbose)
 
 
 if __name__ == "__main__":

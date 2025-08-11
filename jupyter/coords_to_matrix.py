@@ -187,7 +187,7 @@ def process_sc_distances(sc_dna_coords, idx, outdir, lengths_df, transfer_func_k
     if scale_counts_by == 1:
         mean_counts_matrix_file = f"{mean_counts_matrix_file}.npy"
     else:
-        mean_counts_matrix_file = f"{mean_counts_matrix_file}.scale{scale_counts_by:.3g}.npy"
+        mean_counts_matrix_file = mean_counts_matrix_file + f".scale{scale_counts_by:.3g}.npy".replace('+', '')
     nonmissing_per_locus_pair_file = os.path.join(outdir, f'{name}num_nonmissing.npy')
     sc_dist_per_locus_file = os.path.join(outdir, f'{name}distances.per_locus.tsv.gz')
     sc_dist_intramol_file = os.path.join(outdir, f'{name}distances.intramol.tsv.gz')

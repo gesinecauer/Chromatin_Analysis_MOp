@@ -531,6 +531,10 @@ def setup_dist_decay_obj(genomic_dis, chrom, snm3c, constraint_opt):
         agg_weight = np.asarray(agg.loc[agg['mask'], 'weight'].values, order='C')
     else:
         agg_weight = None
+
+    # agg_snm3c_ratio = np.asarray(agg.loc[agg['mask'], 'snm3c_ratio'].values, order='C')
+    # agg_nghbr_idx = np.asarray(agg.loc[agg['mask'], 'nghbr_idx'].values, order='C')
+        
     agg_category = np.asarray(df.loc[df['mask'], 'category'].values, order='C')
     agg_mask = np.asarray(df['mask'].values, order='C')
 
