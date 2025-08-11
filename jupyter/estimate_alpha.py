@@ -111,9 +111,10 @@ def plot_counts_vs_dis(matrix_df, mask, alpha, counts_col, dis_col='dis_mean', b
     y = y[mask_fit]
 
     sns.jointplot(data=matrix_df[mask], x='dis_inverse', y=counts_col, kind='hex')
-    sns.scatterplot(
-        data=matrix_df[mask & (matrix_df[counts_col] > counts_scatter_cutoff)],
-        x='dis_inverse', y=counts_col, linewidths=0, alpha=scatter_opacity, s=10)
+    if (mask & (matrix_df[counts_col] > counts_scatter_cutoff)).any():
+        sns.scatterplot(
+            data=matrix_df[mask & (matrix_df[counts_col] > counts_scatter_cutoff)],
+            x='dis_inverse', y=counts_col, linewidths=0, alpha=scatter_opacity, s=10)
     plt.plot(x, y, color='red')
     plt.xlabel("Inverse distances, $d_{ij}^{-1}$")
     plt.ylabel("Pseudo-counts, $c_{ij}$")
@@ -184,7 +185,7 @@ def estimate_alphas_from_true_dis(matrix_df, num_infer=10, use_poisson=True, int
                 title=f"INTRA-molecular\nα={alpha_intra_:.3g}, β={beta_:.3g}", **plot_kwargs)
         if (matrix_df['mask.diffM']).any():
             plot_counts_vs_dis(
-                matrix_df, mask=matrix_df['mask.diffM'], counts_col=counts_col,
+                matrix_df, mask=matrix_df['mask.diffM'] & (matrix_df[counts_col] != 0), counts_col=counts_col,
                 dis_col=dis_col, alpha=alpha_inter_, beta=beta_, outfile=outfile_inter,
                 title=f"Inter-molecular\nα={alpha_inter_:.3g}, β={beta_:.3g}", **plot_kwargs)
 

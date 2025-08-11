@@ -40,7 +40,7 @@ from jax.nn import relu
 
 
 
-def prep_data_for_inference(dir_matrix2d, mcool_file, dis_factor=1,
+def prep_data_for_inference(dir_matrix2d, mcool_file, scale_snm3c_by=1,
                             resolution=2.5, normalize_snm3c=True, weights_exponent=None,
                             constraint_opt=-1, constraint_penalty=0,
                             data_outdir=None, name=None, remake_npzfile=False, verbose=True):
@@ -70,10 +70,10 @@ def prep_data_for_inference(dir_matrix2d, mcool_file, dis_factor=1,
                 nghbr_dis_quantiles = npz_open['nghbr_dis_quantiles']
 
     if not saved_data_avail:
-        # Load snm3c and single-cell distances
+        # Load snm3c and single-cell distances (not scaling snm3c here...)
         matrix_df, sc_dis, lengths_df = load(
             dir_matrix2d=dir_matrix2d, mcool_file=mcool_file, resolution=resolution,
-            normalize_snm3c=normalize_snm3c, verbose=verbose)
+            normalize_snm3c=normalize_snm3, verbose=verbose)
     
         # Describe 3D distances between neighboring loci
         nghbr_dis = sc_dis.loc[(matrix_df['genomic_dis'] == 1) & (
@@ -101,7 +101,7 @@ def prep_data_for_inference(dir_matrix2d, mcool_file, dis_factor=1,
         snm3c=snm3c, sc_dis_arr=sc_dis_arr, genomic_dis=genomic_dis, chrom=chrom,
         nghbr_dis_quantiles=nghbr_dis_quantiles, snm3c_are_normed=normalize_snm3c,
         constraint_opt=constraint_opt, constraint_penalty=constraint_penalty,
-        weights_exponent=weights_exponent, dis_factor=dis_factor)
+        weights_exponent=weights_exponent, scale_snm3c_by=scale_snm3c_by)
 
     return data
 
@@ -127,10 +127,8 @@ def parse_X(X, infer_nu=False, infer_q=False, infer_a=False):
     return k, d0, nu, q, a
 
 
-def logistic_jax(d, X, infer_nu=False, infer_q=False, infer_a=False, dis_factor=1):
+def logistic_jax(d, X, infer_nu=False, infer_q=False, infer_a=False, scale_snm3c_by=1):
     k, d0, nu, q, a = parse_X(X, infer_nu=infer_nu, infer_q=infer_q, infer_a=infer_a)
-    if dis_factor is not None and dis_factor != 1:
-        d0 = d0 * dis_factor
 
     tmp = -k * (d - d0)
 
@@ -159,6 +157,9 @@ def logistic_jax(d, X, infer_nu=False, infer_q=False, infer_a=False, dis_factor=
     
     log_baz = log_bar / nu
     log_counts = -log_baz
+    if scale_snm3c_by is not None and scale_snm3c_by != 1:
+        log_counts = log_counts + scale_snm3c_by
+    
     counts = jnp.exp(log_counts)
     # baz = jnp.power(bar, 1 / nu)
     # counts = 1 / baz
@@ -229,7 +230,7 @@ def get_bulk_pseudocounts(X, data, intramol_only=False, infer_nu=False,
         mask_sc,
         logistic_jax(
             dis_sc, X, infer_nu=infer_nu, infer_q=infer_q, infer_a=infer_a,
-            dis_factor=data.dis_factor),
+            scale_snm3c_by=data.scale_snm3c_by),
         jnp.zeros_like(dis_sc))
     mask_bulk = mask_sc.sum(axis=1)
     counts = jnp.where(
@@ -446,7 +447,7 @@ def estimate_logistic_param(data, intramol_only=False, infer_nu=False, infer_q=F
         X, data=data, intramol_only=intramol_only, infer_nu=infer_nu,
         infer_q=infer_q, infer_a=infer_a)
     scaling_factors = get_pseudocounts_scaling_factors(
-        counts, snm3c=data.snm3c, chrom=data.chrom) / data.dis_factor
+        counts, snm3c=data.snm3c, chrom=data.chrom)
     d['scaling_factor'] = scaling_factors.values
 
     if verbose > 1:
@@ -496,33 +497,15 @@ def print_infer_results_pseudocounts(d, infer_nu=False, infer_q=False, infer_a=F
 # ===================================================================================================================
 # ===================================================================================================================
 
-def setup_dist_decay_obj(genomic_dis, chrom, snm3c, constraint_opt, version2=True):
+def setup_dist_decay_obj(genomic_dis, chrom, snm3c, constraint_opt):
     tmp = pd.DataFrame.from_dict(
         dict(genomic_dis=genomic_dis, chrom=chrom, snm3c=snm3c))
-    cutoff = tmp.groupby('chrom').genomic_dis.max().min()
 
     tmp['weight'] = 1
-    if constraint_opt == 0:
-        if version2:
-            raise ValueError('not this. probably.')
-        cutoff = 1
-    elif constraint_opt < 0:
+    if constraint_opt != 0:
         tmp['weight'] = tmp.genomic_dis.pow(float(constraint_opt))
-        if version2:
-            cutoff = tmp.groupby('chrom').genomic_dis.max().max()  # No cutoff
-    elif constraint_opt <= 1:  # Is in the range (0, 1]
-        if version2:
-            raise ValueError('not this. probably.')
-        cutoff = cutoff * constraint_opt
-    else:  # Is > 1
-        if version2:
-            raise ValueError('not this.')
-        cutoff = tmp.groupby('chrom').genomic_dis.max().max()  # No cutoff
-        tmp.set_index(['chrom', 'genomic_dis'], inplace=True)
-        tmp['weight'] = tmp.groupby(level=[0, 1]).size().pow(constraint_opt)
-        tmp.reset_index(inplace=True)
 
-    tmp['mask'] = tmp.genomic_dis <= cutoff
+    tmp['mask'] = True # FIXME temp
     tmp['n'] = 1
     tmp['sort_order'] = np.arange(len(tmp), dtype=int)
     tmp.set_index(['chrom', 'genomic_dis'], inplace=True)
@@ -532,14 +515,15 @@ def setup_dist_decay_obj(genomic_dis, chrom, snm3c, constraint_opt, version2=Tru
         'weight': lambda x: x.iloc[0]}).sort_values('sort_order').drop('sort_order', axis=1)
     agg['category'] = -1
     agg.loc[agg['mask'], 'category'] = np.arange(agg['mask'].sum(), dtype=int)
-    if version2:
-        agg['weight'] *= agg['n']  # Also weight by nbins (to make it proportional)
-        print("~~~~~~~~~~~~~~~~~ CONSTRAINT VERSION 2", flush=True)
+    agg['weight'] *= agg['n']  # Also weight by nbins (to make it proportional)
+
+    # agg.index.get_level_values(1)
+    # agg['nghbr_idx'] = agg.groupby(level=0).apply(
+    #     lambda x: x.loc[1, 'category'], include_groups=False)
+    # agg['snm3c_ratio'] = agg.groupby(level=0).apply(
+    #     lambda x: x.snm3c / x.loc[1, 'snm3c'], include_groups=False)
 
     df = tmp[['sort_order']].join(agg).sort_values('sort_order')
-
-    if constraint_opt > 1:
-        assert (df.weight == df.n.pow(constraint_opt)).all()
     
     agg_snm3c = np.asarray(agg.loc[agg['mask'], 'snm3c'].values, order='C')
     agg_n = np.asarray(agg.loc[agg['mask'], 'n'].values, order='C')
@@ -556,9 +540,7 @@ def setup_dist_decay_obj(genomic_dis, chrom, snm3c, constraint_opt, version2=Tru
 class InferArgs(object):
     def __init__(self, snm3c, sc_dis_arr, genomic_dis, chrom, nghbr_dis_quantiles,
                  snm3c_are_normed=True, constraint_opt=-1, constraint_penalty=0,
-                 weights_exponent=None, dis_factor=1):
-        if dis_factor is None:
-            dis_factor = 1.
+                 weights_exponent=None, scale_snm3c_by=1):        
         self.snm3c = snm3c
         self.snm3c_are_normed = snm3c_are_normed
         if snm3c_are_normed:
@@ -566,10 +548,13 @@ class InferArgs(object):
         else:
             self.chrom = None
         self.dis = sc_dis_arr
-        if dis_factor != 1:
-            self.dis *= dis_factor
-            print(f'\tDIS_FACTOR ~~~~~~~~~~~~~~~~~~~~~~~~~~ {dis_factor=}\n', flush=True)
-        self.dis_factor = float(dis_factor)
+
+        if scale_snm3c_by is None:
+            scale_snm3c_by = 1.
+        if scale_snm3c_by != 1:
+            self.snm3c *= scale_snm3c_by
+            print(f'\tSCALE SNM3C BY ~~~~~~~~~~~~~~~~~~~~~~~~~~ {scale_snm3c_by=}\n', flush=True)
+        self.scale_snm3c_by = float(scale_snm3c_by)
 
         if constraint_penalty is None or constraint_penalty == 0:
             self.agg_snm3c = None
@@ -735,11 +720,15 @@ def load_snm3c(mcool_file, resolution=2.5, normalize=True, mask_last_locus_in_ch
     return snm3c, clr_bins, lengths_clr
 
 
-def load(dir_matrix2d, mcool_file, lengths_file=None, resolution=2.5, normalize_snm3c=True, verbose=True):
+def load(dir_matrix2d, mcool_file, lengths_file=None, resolution=2.5, normalize_snm3c=True, scale_snm3c_by=1, verbose=True):
     # Load snm3c-seq data via cooler
     snm3c, clr_bins, lengths_clr = load_snm3c(
         mcool_file, resolution=resolution, normalize=normalize_snm3c, verbose=verbose)
     clr_bins = clr_bins.reset_index().rename({'index': 'idx_clr'}, axis=1)
+    # if scale_snm3c_by is not None and scale_snm3c_by != 1:
+    #     if verbose:
+    #         print(f"Scaling snm3c-seq data by {scale_snm3c_by:.3g}", flush=True)
+    #     snm3c *= scale_snm3c_by
 
     # Load info on missingness across cells
     nonmissing_file = glob.glob(os.path.join(dir_matrix2d, '*num_nonmissing.npy'))
@@ -826,7 +815,7 @@ def load(dir_matrix2d, mcool_file, lengths_file=None, resolution=2.5, normalize_
 # ===================================================================================================================
 
 def load_and_infer(dir_matrix2d, mcool_file, resolution, normalize_snm3c=True, outdir=None, name=None,
-                   intramol_only=False, dis_factor=1, infer_nu=False, infer_q=False, infer_a=False,
+                   intramol_only=False, scale_snm3c_by=1, infer_nu=False, infer_q=False, infer_a=False,
                    obj_type='pearson', constraint_opt=-1, constraint_penalty=0,
                    weights_exponent=None, init=None, bounds=None, seed=0,
                    max_iter=1e20, factr=1e7, maxls=20, pgtol=1e-05, jitted=True):
@@ -849,7 +838,7 @@ def load_and_infer(dir_matrix2d, mcool_file, resolution, normalize_snm3c=True, o
 
     data = prep_data_for_inference(
         dir_matrix2d, mcool_file=mcool_file, resolution=resolution,
-        normalize_snm3c=normalize_snm3c, dis_factor=dis_factor,
+        normalize_snm3c=normalize_snm3c, scale_snm3c_by=scale_snm3c_by,
         constraint_opt=constraint_opt, constraint_penalty=constraint_penalty,
         weights_exponent=weights_exponent, data_outdir=data_outdir, name=name, verbose=True)
     assert isinstance(data.snm3c, np.ndarray) and data.snm3c.size
@@ -899,7 +888,7 @@ def main():
     parser.add_argument("--weights_exponent", default=None, type=int)
     parser.add_argument("--constraint_opt", default=-1, type=float)
     parser.add_argument("--constraint_penalty", default=0, type=float)
-    parser.add_argument("--dis_factor", default=1, type=float)
+    parser.add_argument("--scale_snm3c_by", default=1, type=float)
     
 
     parser.add_argument("--seed", default=0, type=int)
@@ -930,7 +919,7 @@ def main():
         infer_nu=args.infer_nu, infer_q=args.infer_q, infer_a=args.infer_a,
         obj_type=args.obj_type, weights_exponent=args.weights_exponent,
         constraint_opt=args.constraint_opt, constraint_penalty=args.constraint_penalty,
-        dis_factor=args.dis_factor, init=init,
+        scale_snm3c_by=args.scale_snm3c_by, init=init,
         seed=args.seed, max_iter=args.max_iter, factr=args.factr, maxls=args.maxls,
         pgtol=args.pgtol, jitted=args.jitted)
 

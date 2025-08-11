@@ -43,6 +43,8 @@ def prep_matrix_df(lengths_df, matrices, scale_dis_by='mean', nonmissing_bin_per
         if scale_dis_by not in ('mean', 'median'):
             raise ValueError("'scale_dis_by' must be 'mean', 'median', or None.")
 
+    rows, cols = np.triu_indices(len(lengths_df) * 2, 1)
+
     matrix_df = make_matrix_df(lengths_df=lengths_df, matrix_dict=matrices)
     matrix_df['nonmissing'] = matrix_df['nonmissing'].astype(int)
 

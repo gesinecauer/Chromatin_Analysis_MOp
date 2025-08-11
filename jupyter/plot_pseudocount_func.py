@@ -41,12 +41,14 @@ def rescale_snm3c(pseudocounts, snm3c, chrom, copy=True, verbose=False):
     return snm3c
 
 
-def logistic(d, k, d0=0, nu=1, q=1, L=1, a=0):
+def logistic(d, k, d0=0, nu=1, q=1, a=0, scale_snm3c_by=1):
     assert k < 0
     tmp = -k * (d - d0)
     log_bar = np.log1p(q * np.exp(tmp))
     log_baz = log_bar / nu
     log_counts = -log_baz
+    if scale_snm3c_by is not None and scale_snm3c_by != 1:
+        log_counts = log_counts + scale_snm3c_by
     counts = np.exp(log_counts)
     # counts = 1 / np.power(1 + q * np.exp(tmp), 1 / nu)
     if a != 0:
@@ -54,27 +56,35 @@ def logistic(d, k, d0=0, nu=1, q=1, L=1, a=0):
     return counts
 
 
-def power(x, alpha):
+def power(x, alpha, scale_snm3c_by=1):
     if isinstance(x, np.ndarray):
         y = np.full_like(x, np.nan)
         mask = (~np.isnan(x)) & (x > 0)
         y[mask] = np.power(x[mask], alpha)
-        return y
+        counts = y
     else:
-        return x.pow(alpha)
+        counts = x.pow(alpha)
+    if scale_snm3c_by is not None and scale_snm3c_by != 1:
+        counts *= scale_snm3c_by
+    return counts
 
 
-def thresholded(x, cutoff):
-    return x <= cutoff
+def thresholded(x, cutoff, scale_snm3c_by=1):
+    counts = x <= cutoff
+    if scale_snm3c_by is not None and scale_snm3c_by != 1:
+        counts *= scale_snm3c_by
+    return counts
 
 # ===================================================================================================================
 
 
 def get_pseudocounts(matrix_df, sc_dis, transfer_func, transfer_func_kwargs=None, snm3c_are_normalized=True,
-                     agg_func='mean', remove_null_snm3c=True, verbose=False):
+                     scale_snm3c_by=1, agg_func='mean', remove_null_snm3c=True, verbose=False):
     pc_col = f"pc_{agg_func}"
     if transfer_func_kwargs is None:
         transfer_func_kwargs = {}
+    if scale_snm3c_by is not None and scale_snm3c_by != 1:
+        transfer_func_kwargs['scale_snm3c_by'] = scale_snm3c_by
 
     counts_sc = transfer_func(sc_dis, **transfer_func_kwargs)
     if agg_func.lower() == 'mean':
@@ -85,6 +95,8 @@ def get_pseudocounts(matrix_df, sc_dis, transfer_func, transfer_func_kwargs=None
     #     counts_sc.mean(axis=1).to_frame().rename({0: 'pc_mean'}, axis=1),
     #     counts_sc.median(axis=1).to_frame().rename({0: 'pc_med'}, axis=1)], axis=1)
     matrix_df = matrix_df.join(counts, how='inner')
+    if scale_snm3c_by is not None and scale_snm3c_by != 1:
+        matrix_df['snm3c'] *= scale_snm3c_by
     if remove_null_snm3c:
         matrix_df = matrix_df[matrix_df.snm3c.notnull()]
 
@@ -138,15 +150,15 @@ def pearson_corr_pseudocounts(matrix_df_ambig, transfer_func, transfer_func_kwar
 
 
 def assess_pseudocounts(matrix_df, sc_dis, transfer_func, transfer_func_kwargs=None, plot=False, snm3c_are_normalized=True,
-                        perc_cutoff=0.95, agg_func='mean', plot_hue=None, remove_null_snm3c=True, verbose=False):
+                        scale_snm3c_by=1, perc_cutoff=0.95, agg_func='mean', plot_hue=None, remove_null_snm3c=True, verbose=False):
     pc_col = f"pc_{agg_func}"
     if transfer_func_kwargs is None:
         transfer_func_kwargs = {}
 
     matrix_df_ambig, _ = get_pseudocounts(
         matrix_df, sc_dis=sc_dis, transfer_func=transfer_func, transfer_func_kwargs=transfer_func_kwargs,
-        snm3c_are_normalized=snm3c_are_normalized, agg_func=agg_func, remove_null_snm3c=remove_null_snm3c,
-        verbose=verbose)
+        snm3c_are_normalized=snm3c_are_normalized, scale_snm3c_by=scale_snm3c_by, agg_func=agg_func,
+        remove_null_snm3c=remove_null_snm3c, verbose=verbose)
 
     pearson_r = pearson_corr_pseudocounts(
         matrix_df_ambig, transfer_func=transfer_func, transfer_func_kwargs=transfer_func_kwargs,
@@ -161,7 +173,7 @@ def assess_pseudocounts(matrix_df, sc_dis, transfer_func, transfer_func_kwargs=N
 
 
 def assess_via_genomic_dis(matrix_df, sc_dis, transfer_func, transfer_func_kwargs=None, genomic_dis_list=None,
-                           snm3c_are_normalized=True, plot=False, perc_cutoff=0.95, agg_func='mean', plot_hue=None,
+                           snm3c_are_normalized=True, scale_snm3c_by=1, plot=False, perc_cutoff=0.95, agg_func='mean', plot_hue=None,
                            remove_null_snm3c=True, results_file=None, verbose=True):
     pc_col = f"pc_{agg_func}"
     if transfer_func_kwargs is None:
@@ -180,8 +192,8 @@ def assess_via_genomic_dis(matrix_df, sc_dis, transfer_func, transfer_func_kwarg
 
     matrix_df_ambig, _ = get_pseudocounts(
         matrix_df, sc_dis=sc_dis, transfer_func=transfer_func, transfer_func_kwargs=transfer_func_kwargs,
-        snm3c_are_normalized=snm3c_are_normalized, agg_func=agg_func, remove_null_snm3c=remove_null_snm3c,
-        verbose=verbose)
+        snm3c_are_normalized=snm3c_are_normalized, scale_snm3c_by=scale_snm3c_by, agg_func=agg_func,
+        remove_null_snm3c=remove_null_snm3c, verbose=verbose)
 
     for genomic_dis in genomic_dis_list:
         if isinstance(genomic_dis, (int, float)):
@@ -278,9 +290,11 @@ def get_best_func(results_df):
     return func, func_kwargs
 
 
-def plot_best_result(matrix_df, sc_dis, results_df, plot=True):
+def plot_best_result(matrix_df, sc_dis, results_df, snm3c_are_normalized=True, scale_snm3c_by=1, plot=True):
     func, func_kwargs = get_best_func(results_df)
-    pearson_r, (matrix_df, matrix_df_ambig) = assess_pseudocounts(matrix_df, sc_dis, transfer_func=func, transfer_func_kwargs=func_kwargs, plot=plot)
+    pearson_r, (matrix_df, matrix_df_ambig) = assess_pseudocounts(
+        matrix_df, sc_dis, transfer_func=func, transfer_func_kwargs=func_kwargs,
+        snm3c_are_normalized=snm3c_are_normalized, scale_snm3c_by=scale_snm3c_by, plot=plot)
     return pearson_r, (matrix_df, matrix_df_ambig)
 
 
