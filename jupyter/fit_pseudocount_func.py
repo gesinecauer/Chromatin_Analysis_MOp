@@ -73,7 +73,7 @@ def prep_data_for_inference(dir_matrix2d, mcool_file, scale_snm3c_by=1,
         # Load snm3c and single-cell distances (not scaling snm3c here...)
         matrix_df, sc_dis, lengths_df = load(
             dir_matrix2d=dir_matrix2d, mcool_file=mcool_file, resolution=resolution,
-            normalize_snm3c=normalize_snm3, verbose=verbose)
+            normalize_snm3c=normalize_snm3c, verbose=verbose)
     
         # Describe 3D distances between neighboring loci
         nghbr_dis = sc_dis.loc[(matrix_df['genomic_dis'] == 1) & (
