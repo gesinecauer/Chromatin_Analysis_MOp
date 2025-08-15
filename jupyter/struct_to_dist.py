@@ -9,7 +9,7 @@ with warnings.catch_warnings():
     warnings.filterwarnings('ignore', message='', category=UserWarning)
     warnings.filterwarnings('ignore', message='', category=FutureWarning)
     from iced.io import write_lengths
-from parse_dna_merfish import filter_data_per_hmlg, restrict_to_equal_nmol_per_hmlg
+from process_merfish import filter_data_per_hmlg, restrict_to_equal_nmol_per_hmlg
 from process_loci import get_index_of_loci
 from topsy.analysis.compare_distances import make_matrix_df
 
