@@ -3,6 +3,10 @@ import pandas as pd
 import numpy as np
 
 
+def annotate_loci():
+    
+
+
 def get_index_of_loci(df, spacing=2.5, start_col='chrom_start', end_col='chrom_end'):
     df['idx_chrom'] = np.floor(df[[start_col, end_col]].mean(axis=1).values / 1e6 / spacing).astype(int)
     df['idx_chrom'] = df[['chrom', 'idx_chrom']].groupby('chrom').apply(

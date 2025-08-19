@@ -9,7 +9,6 @@ with warnings.catch_warnings():
     warnings.filterwarnings('ignore', message='', category=UserWarning)
     warnings.filterwarnings('ignore', message='', category=FutureWarning)
     from iced.io import write_lengths
-from process_merfish import filter_data_per_hmlg, restrict_to_equal_nmol_per_hmlg
 from process_loci import get_index_of_loci
 from topsy.analysis.compare_distances import make_matrix_df
 
@@ -167,74 +166,14 @@ def process_sc_distances(sc_dna_coords, idx, outdir, lengths_df, name=None, redo
     return {'dis_mean': mean_dist_matrix, 'dis_median': median_dist_matrix, 'nonmissing': nonmissing_per_locus_pair}
 
 
-def add_missing_loci(df, spacing=2.5):
-    assert df.idx_chrom.min() == 0  # (Shouldn't be including loci at beginning of chrom if they're always NaN)
-    idx_chrom = np.arange(df.idx_chrom.min(), df.idx_chrom.max() + 1, dtype=int)
-    if len(idx_chrom) == len(df):
-        return df
-    df_missing = pd.DataFrame()
-    df_missing['idx_chrom'] = idx_chrom[~np.isin(idx_chrom, df.idx_chrom.values)]
-    df_missing['idx_genome'] = df.idx_genome.min() + df_missing.idx_chrom
-    df_missing['mid'] = df.mid.min() + (df_missing.idx_chrom * spacing * 1e6).astype(int)
-    df_missing['has_data'] = 0
-    return pd.concat([df, df_missing]).reset_index(drop=True)
-
-
-def process_sc_dna_coords(input_file, outdir=None, min_nonmissing_per_phased_locus=0.05, nmol_per_hmlg_ratio=1,
-                          spacing=2.5, name=None, chrom=None, redo=False, verbose=False):
-
-    # Assign defaults
-    if min_nonmissing_per_phased_locus is None:
-        min_nonmissing_per_phased_locus = 0.05
-    if nmol_per_hmlg_ratio is None:
-        nmol_per_hmlg_ratio = 1
+def process_sc_dna_coords(input_file, outdir=None, spacing=2.5, name=None, chrom=None, redo=False, verbose=False):
 
     if outdir is None:
         outdir = os.path.dirname(input_file)
     output_note = ''
-    if nmol_per_hmlg_ratio is None:
-        output_note += '.nmol_per_hmlg_unrestricted'
-    elif nmol_per_hmlg_ratio != 1:
-        output_note += f'.nmol_per_hmlg_within_{nmol_per_hmlg_ratio * 100:.3g}p'
-    if min_nonmissing_per_phased_locus != 0.05:
-        output_note += f'.min_nonmissing_per_phased_locus_{min_nonmissing_per_phased_locus * 100:.3g}p'
     outdir_matrix2d = os.path.join(outdir, f'matrix2d{output_note}')
     outfile_df = os.path.join(outdir, re.sub(r'\.csv(\.gz)*$', '', os.path.basename(input_file)) + f'.processed{output_note}.csv')
-
-    # Load data, restrict each chromosome to have an equal (or roughly equal) number of molecules per homolog
-    df = restrict_to_equal_nmol_per_hmlg(input_file, cutoff_ratio=nmol_per_hmlg_ratio, verbose=verbose)
-
-    # Remove loci where <[cutoff]% of cells are non-missing from one or more of the traces
-    df, cov_per_locus = filter_data_per_hmlg(df, min_nonmissing_per_phased_locus=min_nonmissing_per_phased_locus, verbose=verbose)
     
-    # Get index of each locus in the final distance matrices
-    #if 'idx_chrom' not in df.columns or 'idx_genome' not in df.columns:
-    df = get_index_of_loci(df, spacing=spacing)  # Redo indexing, even if it's been done before
-    nbins_per_hmlg = df.idx_genome.max() + 1
-    df['idx'] = nbins_per_hmlg * (df.hmlg - 1) + df.idx_genome
-    # idx = np.arange(df.idx.min(), df.idx.max() + 1, dtype=int)
-    
-    # Create chromosome lengths for bed file
-    lengths_df = df[['idx_genome', 'chrom', 'idx_chrom', 'chrom_start', 'chrom_end', 'chrom_order']].drop_duplicates().sort_values('idx_genome')
-    lengths_df = lengths_df.merge(
-        cov_per_locus.reset_index().drop('pass_cutoff', axis=1, errors='ignore'),
-        on=['chrom', 'chrom_order'], how='left').drop('chrom_order', axis=1)
-    lengths_df['mid'] = lengths_df[['chrom_start', 'chrom_end']].mean(axis=1)
-    offset = lengths_df['mid'] % (spacing * 1e6)
-    lengths_df['mid'] = (lengths_df['mid'] - offset).astype(int) + int(round(offset.median()))
-    lengths_df['chrom'] = 'chr' + lengths_df.chrom.astype(str)
-    lengths_df['has_data'] = 1
-    lengths_df = lengths_df.groupby('chrom').apply(
-        add_missing_loci, include_groups=False, spacing=spacing).reset_index(level=0).sort_values(
-        'idx_genome').reset_index(drop=True)
-    lengths_df['start'] = lengths_df['mid'] - int(spacing * 1e6 / 2)
-    lengths_df['end'] = lengths_df['mid'] + int(spacing * 1e6 / 2)
-    lengths_df = lengths_df[['chrom', 'start', 'end', 'idx_genome', 'idx_chrom', 'mid', 'has_data', 'cell_cov_min', 'cell_cov_h1', 'cell_cov_h2']]
-
-    # Save bed file of chromosome lengths
-    lengths_df_cp = lengths_df.copy()
-    lengths_df_cp.columns = [f"#{c}" for c in lengths_df_cp.columns]
-    lengths_df_cp.to_csv(os.path.join(outdir, "counts.bed"), index=False, header=True, sep="\t")
     
     # Get 3D coordinates for each cell (shape = ncells, nloci, ndim)
     df.sort_values(['idx', 'cell_id'], inplace=True)
@@ -258,8 +197,6 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("data", type=str)
     parser.add_argument("--spacing", default=2.5, type=float)
-    parser.add_argument("--min_nonmissing_per_phased_locus", default=0.05, type=float)
-    parser.add_argument("--nmol_per_hmlg_ratio", default=1, type=float)
     parser.add_argument("--outdir", type=str)
     parser.add_argument("--name", type=str)
     parser.add_argument("--chrom", type=str, nargs='+')
@@ -272,13 +209,8 @@ def main():
     if name is None:
         name = re.sub(r'(^|.*/)cluster(?:\.LINK){0,1}/([^/]+)(/.*|$)', r'\2', os.path.dirname(args.data))
 
-    nmol_per_hmlg_ratio = args.nmol_per_hmlg_ratio
-    if args.nmol_per_hmlg_ratio >= 1000:
-        nmol_per_hmlg_ratio = None
-
     process_sc_dna_coords(
-        input_file=args.data, min_nonmissing_per_phased_locus=args.min_nonmissing_per_phased_locus,
-        nmol_per_hmlg_ratio=nmol_per_hmlg_ratio, spacing=args.spacing, outdir=args.outdir, name=name,
+        input_file=args.data, spacing=args.spacing, outdir=args.outdir, name=name,
         chrom=args.chrom, redo=args.redo, verbose=args.verbose)
 
 

@@ -134,19 +134,6 @@ def filter_loci_by_cell_cov_percentile(lengths_df, percentile, verbose=True):
     return remove_loci
 
 
-# def get_nghbr_bins(matrix, lengths):
-#     mask_intermol_nghbr = np.tile(lengths, 2).cumsum()[:-1] - 1
-#     nghbr_bins = np.diagonal(matrix, offset=1).copy().astype(float)
-#     nghbr_bins[mask_intermol_nghbr] = np.nan
-#     return nghbr_bins
-
-
-# def get_beta_ua(counts, lengths):
-#     # Get beta such that distance between neighbor beads is 1
-#     beta_ua = np.nanmean(get_nghbr_bins(counts, lengths=lengths))
-#     return beta_ua
-
-
 def ambiguate_matrix_df(matrix_df, select_cols=None):
     agg_func = {
         'i.idx': 'count', 'nonmissing': 'sum', 'numerator': 'sum',
