@@ -48,7 +48,6 @@ def load_snm3c(mcool_file, resolution=2.5, normalize=True, mask_last_locus_in_ch
     nan_loci_clr = np.nansum(snm3c, axis=0) == 0
     snm3c[nan_loci_clr, :] = np.nan
     snm3c[:, nan_loci_clr] = np.nan
-    
         
     clr_bins = clr.bins()[:]
     assert len(clr_bins) == snm3c.shape[0]
