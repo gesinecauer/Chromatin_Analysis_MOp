@@ -18,7 +18,7 @@ import warnings
 with warnings.catch_warnings():
     warnings.filterwarnings('ignore', message='', category=UserWarning)
     warnings.filterwarnings('ignore', message='', category=FutureWarning)
-    from topsy.analysis.compare_distances import make_matrix_df
+    from topsy.analysis.distance import make_matrix_df
     from pastis.optimization.utils_poisson import _dict_is_equal, _dict_to_hash, _setup_jax
 
 _setup_jax(traceback=False, debug_nan_inf=False)
@@ -637,10 +637,6 @@ class InferArgs(object):
 def get_unambig_idx_per_ambig(df):
     s = ('h' + df['i.hmlg'].astype(str) + '_h' + df['j.hmlg'].astype(
         str)).to_frame().reset_index().set_index(0)['index']
-    # if 'snm3c' in df.columns:
-    #     s['snm3c'] = df.snm3c.mean()
-    # if 'genomic_dis_ambig' in df.columns:
-    #     s['genomic_dis_ambig'] = df.genomic_dis_ambig.mean()
     return s
 
 

@@ -5,17 +5,19 @@ import re
 import numpy as np
 import pandas as pd
 from scipy.stats import median_abs_deviation
-from process_loci import get_evenly_spaced_loci
+
 from process_snm3c import annotate_loci_snm3c
+# from process_loci import get_evenly_spaced_loci
+from topsy.analysis.distance import load_matrix_df, load_lengths_df
 
 
 def get_nloci_in_trace(df):
     return pd.Series({'nloci': len(df), 'nloci_2trace': (df.ntraces == 2).sum()})
 
 
-def get_ntraces_per_cell(df):
+def get_ntraces_per_cell(df, col_name='ntraces_per_cell'):
     df.set_index(['cell_id', 'chrom'], inplace=True)
-    df['ntraces_per_cell'] = df.groupby(level=[0, 1]).apply(
+    df[col_name] = df.groupby(level=[0, 1]).apply(
         lambda x: len(x.trace_id.drop_duplicates()),
         include_groups=False)
     df.reset_index(inplace=True)
@@ -136,7 +138,7 @@ def filter_data(df, max_nchrom_gt2trace=None, min_detected_per_locus=0.1,
                  f" chromosomes have extra (>2) traces", flush=True)
             print(f"\t ↳ Current n={len(df):,}, {len(df) / nrows_orig * 100:.3g}% of original", flush=True)
 
-    # ==== For each chromosome, only keep traces originating from CELLS with the specified number of traces per cell
+    # ==== For each chromosome, only keep traces **originating** from CELLS with the specified number of traces per cell
     if ntraces_per_cell is not None:
         ntrace_orig = len(df[['cell_id', 'chrom', 'trace_id']].drop_duplicates())
         df = df[df.ntraces_per_cell == ntraces_per_cell]
@@ -197,7 +199,7 @@ def filter_data(df, max_nchrom_gt2trace=None, min_detected_per_locus=0.1,
 def annotate_loci_merfish(df):
     # Create chromosome lengths for bed file, annotate with data coverage
     lengths_df = df[['merfish_id', 'chrom', 'chrom_start', 'chrom_end', 'chrom_order']].drop_duplicates().rename(
-        {'chrom_start': 'start', 'chrom_end': 'end'}, axis=1).sort_values(['chrom', 'chrom_order'])
+        {'chrom_start': 'start', 'chrom_end': 'end'}, axis=1).sort_values(['chrom', 'chrom_order']).reset_index(drop=True)
     lengths_df['mid'] = lengths_df[['start', 'end']].mean(axis=1)
 
     # Annotate chromosome lengths with data coverage information
@@ -215,27 +217,38 @@ def annotate_loci_merfish(df):
     return lengths_df
 
 
-def annotate_loci(df, mcool_file, snm3c_resolution=0.1, normalize_snm3c=True, outdir=None, verbose=True):
-    merfish_df = annotate_loci_merfish(df).drop(['start', 'end'], axis=1).rename({
-        'mid': 'merfish_mid'}, axis=1)
-    snm3c_df = annotate_loci_snm3c(
-        mcool_file, resolution=snm3c_resolution, normalize=normalize_snm3c, verbose=verbose)
+def annotate_loci(df, mcool_file=None, snm3c_resolution=0.1, normalize_snm3c=True, outdir=None, verbose=True):
+    merfish_df = annotate_loci_merfish(df).rename({'mid': 'merfish_mid'}, axis=1)
 
-    # Merge locus info
-    factor = int(snm3c_resolution * 1e6 / 2)
-    merfish_df['mid'] = ((merfish_df.merfish_mid / factor).round() * factor).astype(int)
-    lengths_df = snm3c_df.merge(merfish_df, on=['chrom', 'mid'], how='outer')    
-    assert lengths_df.idx_genome.isnull().sum() == 0
+    cols = ['chrom', 'start', 'end', 'mid', 'idx_genome', 'idx_chrom', 'has_snm3c',
+            'has_merfish', 'merfish_ratio', 'merfish_id', 'merfish_mid', 'snm3c_bias']
+
+    if mcool_file is None:
+        idx_prev = merfish_df.index.values[:-1]
+        idx_next = merfish_df.index.values[1:]
+        same_chrom = merfish_df.[idx_prev, 'chrom'].values == merfish_df.[
+                idx_next, 'chrom'].values        
+        raise NotImplementedError("Get code from lengths_df setup for pseudocounts (process_sc_dna_coords, add_missing_loci)")
+
+        lengths_df = lengths_df[[x for x in cols if 'snm3c' not in x]]
+    else:
+        # Merge locus info
+        merfish_df.drop(['start', 'end'], axis=1, inplace=True)
+        snm3c_df = annotate_loci_snm3c(
+            mcool_file, resolution=snm3c_resolution, normalize=normalize_snm3c,
+            verbose=verbose)
+        factor = int(snm3c_resolution * 1e6 / 2)
+        merfish_df['mid'] = ((merfish_df.merfish_mid / factor).round() * factor).astype(int)
+        lengths_df = snm3c_df.merge(merfish_df, on=['chrom', 'mid'], how='outer')    
+        assert lengths_df.idx_genome.isnull().sum() == 0
+        assert len(lengths_df.columns) == len(merfish_df.columns) + len(snm3c_df.columns) - 2
+        if verbose:
+            print(f"{(lengths_df.has_merfish & (~lengths_df.has_snm3c)).sum()} genomic loci"
+                  " are present in MERFISH but masked out from snm3c-seq", flush=True)
+        lengths_df = lengths_df[cols]
+
     lengths_df.index = lengths_df.idx_genome
     lengths_df.index.name = None
-    lengths_df = lengths_df[[
-        'chrom', 'start', 'end', 'mid', 'idx_genome', 'idx_chrom', 'has_snm3c',
-        'has_merfish', 'merfish_ratio', 'merfish_id', 'merfish_mid', 'snm3c_bias']]
-    assert len(lengths_df.columns) == len(merfish_df.columns) + len(snm3c_df.columns) - 2
-
-    if verbose:
-        print(f"{(lengths_df.has_merfish & (~lengths_df.has_snm3c)).sum()} genomic loci"
-              " are present in MERFISH but masked out from snm3c-seq", flush=True)    
 
     # Save bed file of chromosome lengths
     if outdir is not None:
@@ -266,7 +279,21 @@ def process_data(input_file, chosen_loci_file, max_nchrom_gt2trace=None, min_det
             output_dir, re.sub(r'\.csv$', '', os.path.basename(input_file)) + '.filter.csv')
         print(output_file + '\n', flush=True)
 
-    # ==== Load data
+    # ==== Load previously saved data, if available
+    if output_dir is not None and os.path.isfile(output_file):
+        df = pd.read_csv(
+            output_file, sep='\t', index_col=0,
+            converters={0: ast.literal_eval, 'merfish_id': ast.literal_eval})
+        lengths_file = os.path.join(output_dir, 'counts.bed')
+        if os.path.isfile(lengths_file):
+            lengths_df = load_lengths_df(lengths_file)
+        else:
+            lengths_df = annotate_loci(
+                df, mcool_file=mcool_file, snm3c_resolution=snm3c_resolution,
+                normalize_snm3c=normalize_snm3c, outdir=output_dir, verbose=verbose)
+        return df, lengths_df
+
+    # ==== Load input data
     if os.path.exists(input_file + '.gz') and not os.path.exists(input_file):
         input_file = input_file + '.gz'
     df = pd.read_csv(input_file, dtype={
@@ -310,13 +337,16 @@ def process_data(input_file, chosen_loci_file, max_nchrom_gt2trace=None, min_det
     df['merfish_id'] = list(map(tuple, np.stack(
         [df['chrom'], df['chrom_order']], axis=1).tolist()))
 
+    # ==== Annotate each locus, optionally save to file
+    lengths_df = annotate_loci(
+        df, mcool_file=mcool_file, snm3c_resolution=snm3c_resolution,
+        normalize_snm3c=normalize_snm3c, outdir=output_dir, verbose=verbose)
+    df['idx_genome'] = lengths_df.set_index('merfish_id').loc[df['merfish_id'], 'idx_genome']
+
     # ==== Optional: filter for loci present in snm3c-seq dataset
     if mcool_file is not None:
         if verbose:
             print("\nFilter for loci found in snm3c-seq data", flush=True)
-        lengths_df = annotate_loci(
-            df, mcool_file=mcool_file, snm3c_resolution=snm3c_resolution,
-            normalize_snm3c=normalize_snm3c, outdir=output_dir, verbose=verbose)
         included_loci = lengths_df.loc[lengths_df.has_snm3c, 'merfish_id']
         df = df[df.merfish_id.isin(included_loci)]
 
@@ -326,7 +356,7 @@ def process_data(input_file, chosen_loci_file, max_nchrom_gt2trace=None, min_det
         print(f"\nSaving to {output_file}", flush=True)
         df.to_csv(output_file, index=False)
 
-    return df
+    return df, lengths_df
 
 
 def main():

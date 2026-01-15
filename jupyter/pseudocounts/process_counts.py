@@ -5,15 +5,18 @@ import re
 import ast
 import glob
 from scipy import sparse
-from coords_to_matrix import process_sc_dna_coords
+
 from iced.io import write_counts, write_lengths
 from topsy.plot.plot_distances import plot_distance_matrix
 from topsy.plot.plot_counts import plot_counts_single
-from topsy.analysis.compare_distances import make_matrix_df, get_other_struct_features
-from topsy.analysis.compare_distances import load_sc_dis_per_locus
 from topsy.analysis.utils import get_nghbr_dis_var
 from topsy.utils.misc import symlink
+
+from topsy.analysis.distance import make_matrix_df, ambiguate_matrix_df
+from topsy.analysis.distance.infer_vs_true import load_sc_dis_per_locus, get_other_struct_features
+
 from estimate_alpha import infer_alpha_float_vs_int
+from coords_to_matrix import process_sc_dna_coords
 
 
 def filter_matrix_df(matrix_df, mask):
@@ -145,55 +148,6 @@ def filter_loci_by_cell_cov_percentile(lengths_df, percentile, verbose=True):
 #     # Get beta such that distance between neighbor beads is 1
 #     beta_ua = np.nanmean(get_nghbr_bins(counts, lengths=lengths))
 #     return beta_ua
-
-
-def ambiguate_matrix_df(matrix_df, select_cols=None):
-    agg_func = {
-        'i.idx': 'count', 'nonmissing': 'sum', 'numerator': 'sum',
-        'genomic_dis': 'mean', 'counts': 'sum', 'counts_int': 'sum',
-        'dis_mean': lambda x: x.values.tolist(),
-        'dis_median': lambda x: x.values.tolist(),
-        'mask.nghbr': 'sum', 'mask.sameC-sameH': 'sum'}
-    agg_func = {k: v for k, v in agg_func.items() if k in matrix_df.columns}
-    if select_cols is not None:
-        if isinstance(select_cols, str):
-            select_cols = [select_cols]
-        agg_func = {k: v for k, v in agg_func.items() if k in select_cols or k == 'i.idx'}
-
-    matrix_df_ambig = matrix_df.copy()
-
-    # Ambig index pair should fall within upper triangular of matrix
-    mask_swap = matrix_df['i.idx_ambig'] > matrix_df['j.idx_ambig']
-    for col in ('idx_ambig', 'idx_chrom', 'chrom'):
-        matrix_df_ambig.loc[mask_swap, f'i.{col}'] = matrix_df.loc[mask_swap, f'j.{col}']
-        matrix_df_ambig.loc[mask_swap, f'j.{col}'] = matrix_df.loc[mask_swap, f'i.{col}']
-    matrix_df_ambig = matrix_df_ambig[
-        matrix_df_ambig['i.idx_ambig'] != matrix_df_ambig['j.idx_ambig']]
-
-    # Ambiguate data for each column
-    matrix_df_ambig = matrix_df_ambig.groupby(
-        ['i.idx_ambig', 'j.idx_ambig', 'i.idx_chrom', 'j.idx_chrom', 'i.chrom', 'j.chrom']).agg(
-        agg_func).reset_index().sort_values(['i.idx_ambig', 'j.idx_ambig']).rename(
-        {'mask.sameC-sameH': 'mask.sameC', 'i.idx': 'nbins'}, axis=1, errors='ignore')
-    if 'mask.sameC' in matrix_df_ambig.columns:
-        matrix_df_ambig['mask.sameC'] = matrix_df_ambig['mask.sameC'].astype(bool)
-        matrix_df_ambig['mask.diffC'] = ~matrix_df_ambig['mask.sameC']
-    if 'mask.nghbr' in matrix_df_ambig.columns:
-        matrix_df_ambig['mask.nghbr'] = matrix_df_ambig['mask.nghbr'].astype(bool)
-    if 'dis_mean' in matrix_df_ambig.columns:
-        matrix_df_ambig['dis_mean'] = matrix_df_ambig['dis_mean'].apply(np.array)
-    if 'dis_median' in matrix_df_ambig.columns:
-        matrix_df_ambig['dis_median'] = matrix_df_ambig['dis_median'].apply(np.array)
-    matrix_df_ambig.index = list(map(
-        tuple, matrix_df_ambig[['i.idx_ambig', 'j.idx_ambig']].values.tolist()))
-
-    # Check that all data is present - 4 UA bins per ambig bin
-    missing_ua_data = matrix_df_ambig.nbins != 4
-    if missing_ua_data.any():
-        raise ValueError(f"Incomplete unambiguous data for {missing_ua_data.sum()}"
-                         f" locus pairs:\n{matrix_df_ambig[missing_ua_data]}")
-
-    return matrix_df_ambig
 
 
 def save_matrices(lengths_df, matrix_df, ambiguity='ua', alpha=None, beta=None,

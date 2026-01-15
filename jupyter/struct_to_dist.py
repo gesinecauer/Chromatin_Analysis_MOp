@@ -103,14 +103,14 @@ def process_sc_distances(sc_dna_coords, idx, outdir, lengths_df, name=None, redo
     mean_dist_matrix_file = os.path.join(outdir, f'{name}distances.mean.npy')
     nonmissing_per_locus_pair_file = os.path.join(outdir, f'{name}num_nonmissing.npy')
     sc_dist_per_locus_file = os.path.join(outdir, f'{name}distances.per_locus.tsv.gz')
-    sc_dist_intramol_file = os.path.join(outdir, f'{name}distances.intramol.tsv.gz')
-    sc_dist_sameC_diffH_file = os.path.join(outdir, f'{name}distances.sameC-diffH.tsv.gz')
+    sc_dist_sameH_file = os.path.join(outdir, f'{name}distances.same-hmlg.tsv.gz')
+    sc_dist_diffH_file = os.path.join(outdir, f'{name}distances.diff-hmlg.tsv.gz')
 
-    print(f"Intra-mol sc distances: {sc_dist_intramol_file}", flush=True)
+    print(f"Intra-mol sc distances: {sc_dist_sameH_file}", flush=True)
     
     all_files = [sc_dist_vec_file, median_dist_matrix_file, mean_dist_matrix_file,
-                nonmissing_per_locus_pair_file, sc_dist_per_locus_file, sc_dist_intramol_file,
-                 sc_dist_sameC_diffH_file]
+                nonmissing_per_locus_pair_file, sc_dist_per_locus_file, sc_dist_sameH_file,
+                 sc_dist_diffH_file]
     missing_files = [os.path.basename(f) for f in all_files if not os.path.exists(f)]
     if (not redo) and len(missing_files) == 0:
         return {'dis_mean': np.load(mean_dist_matrix_file), 'dis_median': np.load(median_dist_matrix_file),
@@ -156,33 +156,54 @@ def process_sc_distances(sc_dna_coords, idx, outdir, lengths_df, name=None, redo
         print('Get single-cell distances per locus...', flush=True)
         save_sc_dis_per_locus(sc_dist_vec, idx=idx, outfile=sc_dist_per_locus_file, lengths_df=lengths_df)
 
-    if redo or not (os.path.exists(sc_dist_intramol_file) and os.path.exists(sc_dist_sameC_diffH_file)):
+    if redo or not (os.path.exists(sc_dist_sameH_file) and os.path.exists(sc_dist_diffH_file)):
         print('Saving intra-chromosomal single-cell distances...', flush=True)
         save_sc_dis_intrachr(
-            sc_dist_vec, idx=idx, outfile_sameH=sc_dist_intramol_file,
-            outfile_diffH=sc_dist_sameC_diffH_file, lengths_df=lengths_df)
+            sc_dist_vec, idx=idx, outfile_sameH=sc_dist_sameH_file,
+            outfile_diffH=sc_dist_diffH_file, lengths_df=lengths_df)
 
     print('Done!', flush=True)
     return {'dis_mean': mean_dist_matrix, 'dis_median': median_dist_matrix, 'nonmissing': nonmissing_per_locus_pair}
 
 
-def process_sc_dna_coords(input_file, outdir=None, spacing=2.5, name=None, chrom=None, redo=False, verbose=False):
 
-    if outdir is None:
-        outdir = os.path.dirname(input_file)
-    output_note = ''
-    outdir_matrix2d = os.path.join(outdir, f'matrix2d{output_note}')
-    outfile_df = os.path.join(outdir, re.sub(r'\.csv(\.gz)*$', '', os.path.basename(input_file)) + f'.processed{output_note}.csv')
-    
+def setup_dna_coords(df, phased=True, phasing_column='hmlg'):
+
+    # Get unified diploid index, phased or unphased
+    df['idx'] = df['idx_genome']
+    if phased:
+        n = len(lengths_df)
+        df['idx'] *= (df[phasing_column] - 1) * n
+
+    # If needed, filter for cells that contain two traces
+    if phased and phasing_column == 'trace_id':
+        pass
     
     # Get 3D coordinates for each cell (shape = ncells, nloci, ndim)
-    df.sort_values(['idx', 'cell_id'], inplace=True)
-    df.to_csv(outfile_df, index=False)
+    df.sort_values(['idx', 'cell_id', 'chrom', 'chrom_order'], inplace=True)
+    df.set_index(['idx', 'cell_id'], inplace=True)
+    sc_dna_coords = np.stack([df[[c]].unstack(level=0).values for c in ['x', 'y', 'z']], axis=2)
+
     idx = df.idx.drop_duplicates().sort_values().values
 
-    df.set_index(['idx', 'cell_id'], inplace=True)
-    df = df[['hmlg', 'chrom', 'idx_chrom', 'idx_genome', 'x', 'y', 'z']]
-    sc_dna_coords = np.stack([df[[c]].unstack(level=0).values for c in ['x', 'y', 'z']], axis=2)
+    return sc_dna_coords, idx
+
+
+
+
+def process_sc_dna_coords(coords_file, outdir=None, spacing=2.5, name=None, chrom=None, redo=False, verbose=False):
+    outdir_matrix2d = os.path.join(os.path.dirname(coords_file), 'matrix2d')
+
+    df = pd.read_csv(
+        coords_file, sep='\t', index_col=0,
+        converters={0: ast.literal_eval, 'merfish_id': ast.literal_eval})
+    lengths_file = os.path.join(os.path.dirname(coords_file), 'counts.bed')
+
+
+    if chrom is not None:
+        raise NotImplementedError # FIXME
+
+    sc_dna_coords, idx = setup_dna_coords(df)
 
     matrices = process_sc_distances(
         sc_dna_coords, idx=idx, outdir=outdir_matrix2d, lengths_df=lengths_df,
@@ -210,7 +231,7 @@ def main():
         name = re.sub(r'(^|.*/)cluster(?:\.LINK){0,1}/([^/]+)(/.*|$)', r'\2', os.path.dirname(args.data))
 
     process_sc_dna_coords(
-        input_file=args.data, spacing=args.spacing, outdir=args.outdir, name=name,
+        coords_file=args.data, spacing=args.spacing, outdir=args.outdir, name=name,
         chrom=args.chrom, redo=args.redo, verbose=args.verbose)
 
 
